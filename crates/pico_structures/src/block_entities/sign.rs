@@ -58,12 +58,14 @@ fn deserialize_messages<'de, D>(deserializer: D) -> Result<Vec<Component>, D::Er
 where
     D: Deserializer<'de>,
 {
-    Vec::<SignMessage>::deserialize(deserializer).map(|messages| {
-        messages
-            .into_iter()
-            .map(|msg| msg.into_component())
-            .collect()
-    })
+    Ok(Vec::<SignMessage>::deserialize(deserializer)
+        .map(|messages| {
+            messages
+                .into_iter()
+                .map(|msg| msg.into_component())
+                .collect()
+        })
+        .unwrap_or_default())
 }
 
 #[derive(Default, Deserialize, Serialize, Clone)]
