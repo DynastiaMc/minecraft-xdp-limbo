@@ -1130,7 +1130,9 @@ dependencies = [
 name = "pico_structures"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "blocks_report",
+ "clap",
  "flate2",
  "minecraft_protocol",
  "pico_binutils",

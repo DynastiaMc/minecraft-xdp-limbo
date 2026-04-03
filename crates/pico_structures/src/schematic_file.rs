@@ -171,6 +171,13 @@ impl SchematicFile {
         Ok(schematic)
     }
 
+    pub fn get_version(&self) -> u8 {
+        match self {
+            SchematicFile::V3(_) => 3,
+            SchematicFile::V2(_) => 2,
+        }
+    }
+
     pub fn get_dimensions(&self) -> Coordinates {
         match self {
             SchematicFile::V3(SchematicV3Wrapper { schematic }) => Coordinates::new(
