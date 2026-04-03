@@ -135,9 +135,10 @@ impl Registry {
                 let json_str = std::fs::read_to_string(path)?;
                 let tag = serde_json::from_str::<Tag>(&json_str)?;
                 // TODO: Find a cleaner way to make this conversion from path to identifier
-                // TODO: Handle \ on Windows which should become / in the tag identifier
                 let file_no_ext = path.strip_prefix(&tag_group_path)?.with_extension("");
                 let file_stem = file_no_ext.to_str().ok_or_else(file_stem_error)?;
+                // Handle \ on Windows which should become / in the tag identifier
+                let file_stem = file_stem.replace("\\", "/");
                 let tag_identifier = Identifier::new(&registry_keys.id().namespace, file_stem)?;
                 Ok((tag_identifier, tag))
             })
