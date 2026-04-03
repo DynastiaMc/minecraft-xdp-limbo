@@ -87,7 +87,7 @@ fn build_login_packet(
             i32::try_from(dimension_type.protocol_id)?,
         ))
     } else {
-        Err(PacketHandlerError::InvalidState(format!(
+        Err(PacketHandlerError::invalid_state(&format!(
             "Cannot build login packet for version {protocol_version}",
         )))
     }

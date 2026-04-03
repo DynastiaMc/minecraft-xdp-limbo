@@ -9,18 +9,29 @@ pub enum PacketHandlerError {
     #[error("An error occurred while handling a packet: {0}")]
     Custom(String),
     #[error("{0}")]
-    InvalidState(String),
+    InvalidState(String, bool),
 }
 
 impl PacketHandlerError {
-    #[inline]
-    pub fn custom(message: &str) -> Self {
+    pub fn custom<T>(message: &T) -> Self
+    where
+        T: ToString + ?Sized,
+    {
         Self::Custom(message.to_string())
     }
 
-    #[inline]
-    pub fn invalid_state(message: &str) -> Self {
-        Self::InvalidState(message.to_string())
+    pub fn invalid_state<T>(message: &T) -> Self
+    where
+        T: ToString + ?Sized,
+    {
+        Self::InvalidState(message.to_string(), true)
+    }
+
+    pub fn disconnect<T>(message: &T) -> Self
+    where
+        T: ToString + ?Sized,
+    {
+        Self::InvalidState(message.to_string(), false)
     }
 }
 

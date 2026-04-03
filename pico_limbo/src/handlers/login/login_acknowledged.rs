@@ -168,7 +168,10 @@ mod tests {
         let result = pkt.handle(&mut client_state, &server_state);
 
         // Then
-        assert!(matches!(result, Err(PacketHandlerError::InvalidState(_))));
+        assert!(matches!(
+            result,
+            Err(PacketHandlerError::InvalidState(_, _))
+        ));
     }
 
     #[tokio::test]
