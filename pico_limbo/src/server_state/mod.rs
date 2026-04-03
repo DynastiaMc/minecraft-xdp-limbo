@@ -111,6 +111,8 @@ pub struct ServerState {
     allow_unsupported_versions: bool,
     allow_flight: bool,
     server_commands: ServerCommands,
+    /// Cached JSON status response from the upstream game server (polled periodically).
+    cached_upstream_status: Arc<std::sync::RwLock<Option<String>>>,
 }
 
 impl ServerState {
@@ -245,6 +247,10 @@ impl ServerState {
     pub const fn reply_to_status(&self) -> bool {
         self.reply_to_status
     }
+    /// [Dynastia] Toggle status reply (disabled until first upstream poll succeeds)
+    pub fn set_reply_to_status_live(&mut self, val: bool) {
+        self.reply_to_status = val;
+    }
 
     pub const fn allow_unsupported_versions(&self) -> bool {
         self.allow_unsupported_versions
@@ -256,6 +262,16 @@ impl ServerState {
 
     pub const fn accept_transfers(&self) -> bool {
         self.accept_transfers
+    }
+
+    /// Get the cached upstream status JSON, if available.
+    pub fn cached_upstream_status(&self) -> Option<String> {
+        self.cached_upstream_status.read().ok()?.clone()
+    }
+
+    /// Get the shared handle to update the cached status.
+    pub fn upstream_status_handle(&self) -> Arc<std::sync::RwLock<Option<String>>> {
+        self.cached_upstream_status.clone()
     }
 
     pub const fn server_commands(&self) -> &ServerCommands {
@@ -619,6 +635,7 @@ impl ServerStateBuilder {
             allow_flight: self.allow_flight,
             accept_transfers: self.accept_transfers,
             server_commands: self.server_commands,
+            cached_upstream_status: Arc::new(std::sync::RwLock::new(None)),
         })
     }
 }

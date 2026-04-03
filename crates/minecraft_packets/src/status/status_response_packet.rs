@@ -12,6 +12,11 @@ impl StatusResponsePacket {
         StatusResponsePacket { json_response }
     }
 
+    /// Create directly from a raw JSON string (for proxying upstream status).
+    pub fn from_raw_json(json: String) -> Self {
+        StatusResponsePacket { json_response: json }
+    }
+
     pub fn status_response(&self) -> serde_json::Result<StatusResponse> {
         serde_json::from_str(self.json_response.as_str())
     }
