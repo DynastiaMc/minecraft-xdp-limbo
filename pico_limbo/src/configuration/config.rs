@@ -28,6 +28,34 @@ pub enum ConfigError {
     EnvPlaceholder(#[from] EnvPlaceholderError),
 }
 
+/// Upstream game server configuration for status proxy and auto-transfer.
+#[derive(Serialize, Deserialize)]
+#[serde(default)]
+pub struct UpstreamConfig {
+    /// Address to poll for status (MOTD, players, icon). Empty = disabled.
+    pub status_addr: String,
+    /// Poll interval in seconds.
+    pub poll_secs: u64,
+    /// Hostname sent in the Transfer packet to the player.
+    pub transfer_host: String,
+    /// Port sent in the Transfer packet. 0 = no transfer.
+    pub transfer_port: i32,
+    /// Health check retry interval in seconds (when game server is down).
+    pub retry_secs: u64,
+}
+
+impl Default for UpstreamConfig {
+    fn default() -> Self {
+        Self {
+            status_addr: String::new(),
+            poll_secs: 10,
+            transfer_host: String::new(),
+            transfer_port: 0,
+            retry_secs: 5,
+        }
+    }
+}
+
 /// Version gate: only players within the accepted version range can join.
 /// The hard floor (1.20.5 / protocol 766) is always enforced regardless of config
 /// because Transfer packets don't exist below 1.20.5.
@@ -115,6 +143,8 @@ pub struct Config {
     pub commands: CommandsConfig,
 
     pub version_gate: VersionGateConfig,
+
+    pub upstream: UpstreamConfig,
 }
 
 impl Default for Config {
@@ -139,6 +169,7 @@ impl Default for Config {
             accept_transfers: false,
             commands: CommandsConfig::default(),
             version_gate: VersionGateConfig::default(),
+            upstream: UpstreamConfig::default(),
         }
     }
 }

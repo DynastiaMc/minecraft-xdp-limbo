@@ -111,6 +111,11 @@ pub struct ServerState {
     allow_unsupported_versions: bool,
     allow_flight: bool,
     server_commands: ServerCommands,
+    upstream_status_addr: String,
+    upstream_poll_secs: u64,
+    upstream_transfer_host: String,
+    upstream_transfer_port: i32,
+    upstream_retry_secs: u64,
     vg_protocol: i32,
     vg_version: String,
     vg_min_protocol: i32,
@@ -255,6 +260,12 @@ impl ServerState {
         self.reply_to_status
     }
     /// [Dynastia] Toggle status reply (disabled until first upstream poll succeeds)
+    pub fn upstream_status_addr(&self) -> &str { &self.upstream_status_addr }
+    pub fn upstream_poll_secs(&self) -> u64 { self.upstream_poll_secs }
+    pub fn upstream_transfer_host(&self) -> &str { &self.upstream_transfer_host }
+    pub fn upstream_transfer_port(&self) -> i32 { self.upstream_transfer_port }
+    pub fn upstream_retry_secs(&self) -> u64 { self.upstream_retry_secs }
+
     pub fn vg_protocol(&self) -> i32 { self.vg_protocol }
     pub fn vg_version(&self) -> String { self.vg_version.clone() }
     pub fn vg_min_protocol(&self) -> i32 { self.vg_min_protocol }
@@ -359,6 +370,11 @@ pub struct ServerStateBuilder {
     allow_flight: bool,
     accept_transfers: bool,
     server_commands: ServerCommands,
+    upstream_status_addr: String,
+    upstream_poll_secs: u64,
+    upstream_transfer_host: String,
+    upstream_transfer_port: i32,
+    upstream_retry_secs: u64,
     vg_protocol: i32,
     vg_version: String,
     vg_min_protocol: i32,
@@ -639,6 +655,15 @@ impl ServerStateBuilder {
 
     /// Finish building, returning an error if any required fields are missing.
 
+    pub fn set_upstream(&mut self, cfg: &crate::configuration::config::UpstreamConfig) -> &mut Self {
+        self.upstream_status_addr = cfg.status_addr.clone();
+        self.upstream_poll_secs = cfg.poll_secs;
+        self.upstream_transfer_host = cfg.transfer_host.clone();
+        self.upstream_transfer_port = cfg.transfer_port;
+        self.upstream_retry_secs = cfg.retry_secs;
+        self
+    }
+
     pub fn set_version_gate(&mut self, cfg: &crate::configuration::config::VersionGateConfig) -> &mut Self {
         self.vg_protocol = cfg.protocol;
         self.vg_version = cfg.version.clone();
@@ -693,6 +718,11 @@ impl ServerStateBuilder {
             allow_flight: self.allow_flight,
             accept_transfers: self.accept_transfers,
             server_commands: self.server_commands,
+            upstream_status_addr: self.upstream_status_addr,
+            upstream_poll_secs: self.upstream_poll_secs,
+            upstream_transfer_host: self.upstream_transfer_host,
+            upstream_transfer_port: self.upstream_transfer_port,
+            upstream_retry_secs: self.upstream_retry_secs,
             vg_protocol: self.vg_protocol,
             vg_version: if self.vg_version.is_empty() { "1.21".into() } else { self.vg_version },
             vg_min_protocol: self.vg_min_protocol,

@@ -6,16 +6,17 @@ fetch_player_skins = false
 method = "NONE"
 
 [version_gate]
-# Server's native version (shown in server list for compatible clients)
 protocol = 769
 version = "1.21.4"
-
-# Accepted range (inclusive). Hard floor 766 / 1.20.5 always applies.
 min_protocol = 768
 min_version_name = "1.21"
-# Set max_protocol = 0 for no upper limit
 max_protocol = 0
 max_version_name = ""
-
-# Kick message for clients outside the range. <range> is replaced.
 kick_message = "§6» §e» §6§lDYNASTIA §e« §6«\n\n§cLe serveur accepte uniquement les versions §6<range>§c."
+
+[upstream]
+status_addr = "10.99.0.2:25568"
+poll_secs = 10
+transfer_host = "play.dynastia.fr"
+transfer_port = 25568
+retry_secs = 5

@@ -49,7 +49,9 @@ impl Server {
 
     pub async fn accept(self, listener: &TcpListener) {
         // [Dynastia] Start upstream status poller if configured
-        if let Ok(upstream_addr) = std::env::var("UPSTREAM_STATUS") {
+        {
+            let upstream_addr = self.state.read().await.upstream_status_addr().to_string();
+            if !upstream_addr.is_empty() {
             let handle = self.state.read().await.upstream_status_handle();
 
             // Load persisted cache from disk (survives VPS reboots)
@@ -69,6 +71,7 @@ impl Server {
             std::thread::spawn(move || {
                 poll_upstream_status_thread(upstream_addr, handle, state_for_poller);
             });
+            }
         }
 
         loop {
@@ -200,12 +203,10 @@ async fn process_packet(addr: SocketAddr,
         }
 
         // Auto-transfer to game server after a short delay
-        let transfer_host = std::env::var("TRANSFER_HOST")
-            .unwrap_or_else(|_| "play.dynastia.fr".to_string());
-        let transfer_port: i32 = std::env::var("TRANSFER_PORT")
-            .unwrap_or_else(|_| "25568".to_string())
-            .parse()
-            .unwrap_or(25568);
+        let (transfer_host, transfer_port, retry_secs) = {
+            let ss = server_state.read().await;
+            (ss.upstream_transfer_host().to_string(), ss.upstream_transfer_port(), ss.upstream_retry_secs())
+        };
         if transfer_port > 0 {
             // Version gate is enforced in the handshake handler (before login).
             // By this point, the client already passed the version check.
@@ -359,10 +360,7 @@ fn poll_upstream_status_thread(
     cache: std::sync::Arc<std::sync::RwLock<Option<String>>>,
     server_state: std::sync::Arc<tokio::sync::RwLock<ServerState>>,
 ) {
-    let poll_secs: u64 = std::env::var("UPSTREAM_POLL_SECS")
-        .unwrap_or_else(|_| "10".to_string())
-        .parse()
-        .unwrap_or(10);
+    let poll_secs: u64 = 10; // default, overridden by caller
 
     eprintln!("[poller] Starting for {} (every {}s)", addr, poll_secs);
     let mut backend_was_up = true;
