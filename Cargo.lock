@@ -1053,13 +1053,14 @@ dependencies = [
 
 [[package]]
 name = "pico_limbo"
-version = "1.12.1+mc26.1.1"
+version = "1.12.0+mc26.1"
 dependencies = [
  "base64",
  "blocks_report",
  "clap",
  "futures",
  "hmac",
+ "libc",
  "macros",
  "md-5",
  "minecraft_packets",

@@ -206,9 +206,27 @@ async fn process_packet(addr: SocketAddr,
             .unwrap_or_else(|_| "25568".to_string())
             .parse()
             .unwrap_or(25568);
-        if transfer_port > 0 && protocol_version >= minecraft_protocol::prelude::ProtocolVersion::from(766) {
+        if transfer_port > 0 {
+            // Version gate: hard floor (766 = 1.20.5, Transfer packets) + configurable min.
+            let effective_floor = {
+                let ss = server_state.read().await;
+                std::cmp::max(766, ss.version_gate_protocol())
+            };
+
+            if protocol_version < minecraft_protocol::prelude::ProtocolVersion::from(effective_floor) {
+                let (kick_msg, version_name) = {
+                    let ss = server_state.read().await;
+                    (ss.version_gate_kick_message(), ss.version_gate_version_name())
+                };
+                let msg = kick_msg.replace("<version>", &version_name).replace("\n", "
+");
+                warn!("{} kicked: protocol {} < {} ({})", username, protocol_version.version_number(), effective_floor, version_name);
+                drop(client_state);
+                let _ = kick_client(client_data, msg).await;
+                return Err(PacketProcessingError::Disconnected);
+            }
+
             drop(client_state);
-            // Small delay so the client finishes loading the play state
             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
             let mut cs = client_data.client().await;
             let pv = cs.protocol_version();

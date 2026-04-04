@@ -4,3 +4,8 @@ fetch_player_skins = false
 
 [forwarding]
 method = "NONE"
+
+[version_gate]
+min_protocol = 768
+min_version_name = "1.21"
+kick_message = "§6» §e» §6§lDYNASTIA §e« §6«\n\n§cLe serveur accepte uniquement les versions §6<version>+§c."

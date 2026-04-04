@@ -28,6 +28,26 @@ pub enum ConfigError {
     EnvPlaceholder(#[from] EnvPlaceholderError),
 }
 
+/// Version gate: kick players below the minimum version before transferring.
+/// The hard floor (1.20.5 / protocol 766) is always enforced regardless of config.
+#[derive(Serialize, Deserialize)]
+#[serde(default)]
+pub struct VersionGateConfig {
+    pub min_protocol: i32,
+    pub min_version_name: String,
+    pub kick_message: String,
+}
+
+impl Default for VersionGateConfig {
+    fn default() -> Self {
+        Self {
+            min_protocol: 766,
+            min_version_name: "1.20.5".into(),
+            kick_message: "This server requires Minecraft <version> or newer.".into(),
+        }
+    }
+}
+
 /// Application configuration, serializable to/from TOML.
 #[derive(Serialize, Deserialize)]
 #[serde(default)]
@@ -77,6 +97,8 @@ pub struct Config {
     pub title: TitleConfig,
 
     pub commands: CommandsConfig,
+
+    pub version_gate: VersionGateConfig,
 }
 
 impl Default for Config {
@@ -100,6 +122,7 @@ impl Default for Config {
             allow_flight: false,
             accept_transfers: false,
             commands: CommandsConfig::default(),
+            version_gate: VersionGateConfig::default(),
         }
     }
 }

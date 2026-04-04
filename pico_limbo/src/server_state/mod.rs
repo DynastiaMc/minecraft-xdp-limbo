@@ -111,6 +111,9 @@ pub struct ServerState {
     allow_unsupported_versions: bool,
     allow_flight: bool,
     server_commands: ServerCommands,
+    version_gate_protocol: i32,
+    version_gate_version_name: String,
+    version_gate_kick_message: String,
     /// Cached JSON status response from the upstream game server (polled periodically).
     cached_upstream_status: Arc<std::sync::RwLock<Option<String>>>,
 }
@@ -248,6 +251,18 @@ impl ServerState {
         self.reply_to_status
     }
     /// [Dynastia] Toggle status reply (disabled until first upstream poll succeeds)
+    pub fn version_gate_protocol(&self) -> i32 {
+        self.version_gate_protocol
+    }
+
+    pub fn version_gate_version_name(&self) -> String {
+        self.version_gate_version_name.clone()
+    }
+
+    pub fn version_gate_kick_message(&self) -> String {
+        self.version_gate_kick_message.clone()
+    }
+
     pub fn set_reply_to_status_live(&mut self, val: bool) {
         self.reply_to_status = val;
     }
@@ -319,6 +334,9 @@ pub struct ServerStateBuilder {
     allow_flight: bool,
     accept_transfers: bool,
     server_commands: ServerCommands,
+    version_gate_protocol: i32,
+    version_gate_version_name: String,
+    version_gate_kick_message: String,
 }
 
 #[derive(Debug, Error)]
@@ -591,6 +609,13 @@ impl ServerStateBuilder {
     }
 
     /// Finish building, returning an error if any required fields are missing.
+
+    pub fn set_version_gate(&mut self, protocol: i32, name: &str, msg: &str) -> &mut Self {
+        self.version_gate_protocol = std::cmp::max(766, protocol);
+        self.version_gate_version_name = name.to_string();
+        self.version_gate_kick_message = msg.to_string();
+        self
+    }
     pub fn build(self) -> Result<ServerState, ServerStateBuilderError> {
         let world = if self.schematic_file_path.is_empty() {
             None
@@ -635,6 +660,9 @@ impl ServerStateBuilder {
             allow_flight: self.allow_flight,
             accept_transfers: self.accept_transfers,
             server_commands: self.server_commands,
+            version_gate_protocol: std::cmp::max(766, self.version_gate_protocol),
+            version_gate_version_name: if self.version_gate_version_name.is_empty() { "1.20.5".into() } else { self.version_gate_version_name },
+            version_gate_kick_message: if self.version_gate_kick_message.is_empty() { "This server requires Minecraft <version> or newer.".into() } else { self.version_gate_kick_message },
             cached_upstream_status: Arc::new(std::sync::RwLock::new(None)),
         })
     }
