@@ -16,19 +16,19 @@ impl PacketHandler for StatusRequestPacket {
     ) -> Result<Batch<PacketRegistry>, PacketHandlerError> {
         let mut batch = Batch::new();
 
-        // [Dynastia] Use cached upstream status if available.
-        // Override version with the limbo's version gate so incompatible clients
-        // see a red X in the server list.
+        // [Dynastia] Use cached upstream status (MOTD, players, icon from game server).
+        // Override version with the limbo's version gate:
+        // - Client in range → server's native version + client's protocol → green bars
+        // - Client out of range → server's native version + server's protocol → red X
         let packet = if let Some(cached_json) = server_state.cached_upstream_status() {
-            let effective_floor = std::cmp::max(766, server_state.version_gate_protocol());
-            let version_name = server_state.version_gate_version_name();
+            let client_proto = client_state.protocol_version().version_number();
             if let Ok(mut status) = serde_json::from_str::<serde_json::Value>(&cached_json) {
                 status["version"] = serde_json::json!({
-                    "name": format!("{}+", version_name),
-                    "protocol": effective_floor
+                    "name": server_state.vg_status_name(client_proto),
+                    "protocol": server_state.vg_status_protocol(client_proto)
                 });
                 StatusResponsePacket::from_raw_json(
-                    serde_json::to_string(&status).unwrap_or(cached_json)
+                    serde_json::to_string(&status).unwrap_or(cached_json),
                 )
             } else {
                 StatusResponsePacket::from_raw_json(cached_json)

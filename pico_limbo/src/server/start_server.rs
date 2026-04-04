@@ -128,7 +128,7 @@ fn build_state(cfg: Config) -> Result<ServerState, ServerStateBuilderError> {
         .set_allow_unsupported_versions(cfg.allow_unsupported_versions)
         .set_allow_flight(cfg.allow_flight)
         .set_accept_transfers(cfg.accept_transfers)
-        .set_version_gate(cfg.version_gate.min_protocol, &cfg.version_gate.min_version_name, &cfg.version_gate.kick_message)
+        .set_version_gate(&cfg.version_gate)
         .server_commands(cfg.commands);
 
     server_state_builder.build()

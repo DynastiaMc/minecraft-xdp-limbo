@@ -28,22 +28,38 @@ pub enum ConfigError {
     EnvPlaceholder(#[from] EnvPlaceholderError),
 }
 
-/// Version gate: kick players below the minimum version before transferring.
-/// The hard floor (1.20.5 / protocol 766) is always enforced regardless of config.
+/// Version gate: only players within the accepted version range can join.
+/// The hard floor (1.20.5 / protocol 766) is always enforced regardless of config
+/// because Transfer packets don't exist below 1.20.5.
 #[derive(Serialize, Deserialize)]
 #[serde(default)]
 pub struct VersionGateConfig {
+    /// Server's native protocol version (displayed in server list for compatible clients).
+    pub protocol: i32,
+    /// Server's native version name (displayed in server list).
+    pub version: String,
+    /// Minimum accepted protocol (inclusive). Hard floor 766 always applies.
     pub min_protocol: i32,
+    /// Minimum version name (for kick message).
     pub min_version_name: String,
+    /// Maximum accepted protocol (inclusive). 0 = no upper limit.
+    pub max_protocol: i32,
+    /// Maximum version name (for kick message).
+    pub max_version_name: String,
+    /// Kick message. <range> is replaced by "min - max" or "min+" if no max.
     pub kick_message: String,
 }
 
 impl Default for VersionGateConfig {
     fn default() -> Self {
         Self {
-            min_protocol: 766,
-            min_version_name: "1.20.5".into(),
-            kick_message: "This server requires Minecraft <version> or newer.".into(),
+            protocol: 768,
+            version: "1.21".into(),
+            min_protocol: 768,
+            min_version_name: "1.21".into(),
+            max_protocol: 0,
+            max_version_name: String::new(),
+            kick_message: "This server accepts Minecraft <range> only.".into(),
         }
     }
 }

@@ -111,9 +111,13 @@ pub struct ServerState {
     allow_unsupported_versions: bool,
     allow_flight: bool,
     server_commands: ServerCommands,
-    version_gate_protocol: i32,
-    version_gate_version_name: String,
-    version_gate_kick_message: String,
+    vg_protocol: i32,
+    vg_version: String,
+    vg_min_protocol: i32,
+    vg_min_version_name: String,
+    vg_max_protocol: i32,
+    vg_max_version_name: String,
+    vg_kick_message: String,
     /// Cached JSON status response from the upstream game server (polled periodically).
     cached_upstream_status: Arc<std::sync::RwLock<Option<String>>>,
 }
@@ -251,16 +255,37 @@ impl ServerState {
         self.reply_to_status
     }
     /// [Dynastia] Toggle status reply (disabled until first upstream poll succeeds)
-    pub fn version_gate_protocol(&self) -> i32 {
-        self.version_gate_protocol
+    pub fn vg_protocol(&self) -> i32 { self.vg_protocol }
+    pub fn vg_version(&self) -> String { self.vg_version.clone() }
+    pub fn vg_min_protocol(&self) -> i32 { self.vg_min_protocol }
+    pub fn vg_min_version_name(&self) -> String { self.vg_min_version_name.clone() }
+    pub fn vg_max_protocol(&self) -> i32 { self.vg_max_protocol }
+    pub fn vg_max_version_name(&self) -> String { self.vg_max_version_name.clone() }
+    pub fn vg_kick_message(&self) -> String { self.vg_kick_message.clone() }
+    pub fn vg_effective_min(&self) -> i32 { std::cmp::max(766, self.vg_min_protocol) }
+    pub fn vg_in_range(&self, proto: i32) -> bool {
+        proto >= self.vg_effective_min() && (self.vg_max_protocol == 0 || proto <= self.vg_max_protocol)
     }
-
-    pub fn version_gate_version_name(&self) -> String {
-        self.version_gate_version_name.clone()
+    pub fn vg_range_string(&self) -> String {
+        if self.vg_max_protocol == 0 || self.vg_max_version_name.is_empty() {
+            format!("{}+", self.vg_min_version_name)
+        } else {
+            format!("{} - {}", self.vg_min_version_name, self.vg_max_version_name)
+        }
     }
-
-    pub fn version_gate_kick_message(&self) -> String {
-        self.version_gate_kick_message.clone()
+    pub fn vg_status_protocol(&self, client_proto: i32) -> i32 {
+        if self.vg_in_range(client_proto) {
+            client_proto
+        } else {
+            std::cmp::max(766, self.vg_protocol)
+        }
+    }
+    pub fn vg_status_name(&self, client_proto: i32) -> String {
+        if self.vg_in_range(client_proto) {
+            self.vg_version.clone()
+        } else {
+            self.vg_version.clone()
+        }
     }
 
     pub fn set_reply_to_status_live(&mut self, val: bool) {
@@ -334,9 +359,13 @@ pub struct ServerStateBuilder {
     allow_flight: bool,
     accept_transfers: bool,
     server_commands: ServerCommands,
-    version_gate_protocol: i32,
-    version_gate_version_name: String,
-    version_gate_kick_message: String,
+    vg_protocol: i32,
+    vg_version: String,
+    vg_min_protocol: i32,
+    vg_min_version_name: String,
+    vg_max_protocol: i32,
+    vg_max_version_name: String,
+    vg_kick_message: String,
 }
 
 #[derive(Debug, Error)]
@@ -610,10 +639,14 @@ impl ServerStateBuilder {
 
     /// Finish building, returning an error if any required fields are missing.
 
-    pub fn set_version_gate(&mut self, protocol: i32, name: &str, msg: &str) -> &mut Self {
-        self.version_gate_protocol = std::cmp::max(766, protocol);
-        self.version_gate_version_name = name.to_string();
-        self.version_gate_kick_message = msg.to_string();
+    pub fn set_version_gate(&mut self, cfg: &crate::configuration::config::VersionGateConfig) -> &mut Self {
+        self.vg_protocol = cfg.protocol;
+        self.vg_version = cfg.version.clone();
+        self.vg_min_protocol = cfg.min_protocol;
+        self.vg_min_version_name = cfg.min_version_name.clone();
+        self.vg_max_protocol = cfg.max_protocol;
+        self.vg_max_version_name = cfg.max_version_name.clone();
+        self.vg_kick_message = cfg.kick_message.clone();
         self
     }
     pub fn build(self) -> Result<ServerState, ServerStateBuilderError> {
@@ -660,9 +693,13 @@ impl ServerStateBuilder {
             allow_flight: self.allow_flight,
             accept_transfers: self.accept_transfers,
             server_commands: self.server_commands,
-            version_gate_protocol: std::cmp::max(766, self.version_gate_protocol),
-            version_gate_version_name: if self.version_gate_version_name.is_empty() { "1.20.5".into() } else { self.version_gate_version_name },
-            version_gate_kick_message: if self.version_gate_kick_message.is_empty() { "This server requires Minecraft <version> or newer.".into() } else { self.version_gate_kick_message },
+            vg_protocol: self.vg_protocol,
+            vg_version: if self.vg_version.is_empty() { "1.21".into() } else { self.vg_version },
+            vg_min_protocol: self.vg_min_protocol,
+            vg_min_version_name: if self.vg_min_version_name.is_empty() { "1.21".into() } else { self.vg_min_version_name },
+            vg_max_protocol: self.vg_max_protocol,
+            vg_max_version_name: self.vg_max_version_name,
+            vg_kick_message: if self.vg_kick_message.is_empty() { "This server accepts Minecraft <range> only.".into() } else { self.vg_kick_message },
             cached_upstream_status: Arc::new(std::sync::RwLock::new(None)),
         })
     }
