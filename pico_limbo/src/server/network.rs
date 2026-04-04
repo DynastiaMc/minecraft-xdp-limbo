@@ -9,17 +9,17 @@ use futures::StreamExt;
 use minecraft_packets::login::login_disconnect_packet::LoginDisconnectPacket;
 use minecraft_packets::play::client_bound_keep_alive_packet::ClientBoundKeepAlivePacket;
 use minecraft_packets::play::disconnect_packet::DisconnectPacket;
+use minecraft_packets::play::transfer_packet::TransferPacket;
 use minecraft_protocol::prelude::State;
 use net::packet_stream::PacketStreamError;
 use net::raw_packet::RawPacket;
+use std::net::SocketAddr;
 use std::num::TryFromIntError;
 use std::sync::Arc;
 use thiserror::Error;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::RwLock;
 use tracing::{debug, error, info, trace, warn};
-use std::net::SocketAddr;
-use minecraft_packets::play::transfer_packet::TransferPacket;
 
 pub struct Server {
     state: Arc<RwLock<ServerState>>,
@@ -52,25 +52,25 @@ impl Server {
         {
             let upstream_addr = self.state.read().await.upstream_status_addr().to_string();
             if !upstream_addr.is_empty() {
-            let handle = self.state.read().await.upstream_status_handle();
+                let handle = self.state.read().await.upstream_status_handle();
 
-            // Load persisted cache from disk (survives VPS reboots)
-            if let Ok(json) = std::fs::read_to_string("./upstream_status.json") {
-                if let Ok(mut c) = handle.write() {
-                    *c = Some(json);
+                // Load persisted cache from disk (survives VPS reboots)
+                if let Ok(json) = std::fs::read_to_string("./upstream_status.json") {
+                    if let Ok(mut c) = handle.write() {
+                        *c = Some(json);
+                    }
+                    self.state.write().await.set_reply_to_status_live(true);
+                    info!("Loaded persisted upstream status from disk");
+                } else {
+                    // No cache — don't reply to status pings until first poll succeeds
+                    self.state.write().await.set_reply_to_status_live(false);
+                    info!("No persisted upstream status — server appears offline until first poll");
                 }
-                self.state.write().await.set_reply_to_status_live(true);
-                info!("Loaded persisted upstream status from disk");
-            } else {
-                // No cache — don't reply to status pings until first poll succeeds
-                self.state.write().await.set_reply_to_status_live(false);
-                info!("No persisted upstream status — server appears offline until first poll");
-            }
 
-            let state_for_poller = std::sync::Arc::clone(&self.state);
-            std::thread::spawn(move || {
-                poll_upstream_status_thread(upstream_addr, handle, state_for_poller);
-            });
+                let state_for_poller = std::sync::Arc::clone(&self.state);
+                std::thread::spawn(move || {
+                    poll_upstream_status_thread(upstream_addr, handle, state_for_poller);
+                });
             }
         }
 
@@ -117,7 +117,11 @@ impl From<PacketHandlerError> for PacketProcessingError {
         match e {
             PacketHandlerError::Custom(reason) => Self::Custom(reason),
             PacketHandlerError::InvalidState(reason, should_warn) => {
-                if should_warn { warn!("{reason}"); } else { debug!("{reason}"); }
+                if should_warn {
+                    warn!("{reason}");
+                } else {
+                    debug!("{reason}");
+                }
                 Self::Disconnected
             }
         }
@@ -161,7 +165,8 @@ impl From<PacketStreamError> for PacketProcessingError {
     }
 }
 
-async fn process_packet(addr: SocketAddr, 
+async fn process_packet(
+    addr: SocketAddr,
     client_data: &ClientData,
     server_state: &Arc<RwLock<ServerState>>,
     raw_packet: RawPacket,
@@ -205,13 +210,18 @@ async fn process_packet(addr: SocketAddr,
         // Auto-transfer to game server after a short delay
         let (transfer_host, transfer_port, retry_secs) = {
             let ss = server_state.read().await;
-            (ss.upstream_transfer_host().to_string(), ss.upstream_transfer_port(), ss.upstream_retry_secs())
+            (
+                ss.upstream_transfer_host().to_string(),
+                ss.upstream_transfer_port(),
+                ss.upstream_retry_secs(),
+            )
         };
         if transfer_port > 0 {
             // Version gate is enforced in the handshake handler (before login).
             // By this point, the client already passed the version check.
             drop(client_state);
             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            let transfer_start = std::time::Instant::now();
             let mut cs = client_data.client().await;
             let pv = cs.protocol_version();
             drop(cs);
@@ -221,7 +231,13 @@ async fn process_packet(addr: SocketAddr,
             };
             if let Ok(raw) = PacketRegistry::Transfer(pkt).encode_packet(pv) {
                 let _ = client_data.write_packet(raw).await;
-                info!("Transferred {} to {}:{}", username, transfer_host, transfer_port);
+                info!(
+                    "Transferred {} to {}:{} in {}ms",
+                    username,
+                    transfer_host,
+                    transfer_port,
+                    transfer_start.elapsed().as_millis()
+                );
             }
             // Return early — skip the rest of the batch processing for this packet
             return Ok(());
@@ -256,7 +272,8 @@ async fn process_packet(addr: SocketAddr,
     Ok(())
 }
 
-async fn read(addr: SocketAddr, 
+async fn read(
+    addr: SocketAddr,
     client_data: &ClientData,
     server_state: &Arc<RwLock<ServerState>>,
     was_in_play_state: &mut bool,
@@ -273,7 +290,11 @@ async fn read(addr: SocketAddr,
     Ok(())
 }
 
-async fn handle_client(socket: TcpStream, addr: SocketAddr, server_state: Arc<RwLock<ServerState>>) {
+async fn handle_client(
+    socket: TcpStream,
+    addr: SocketAddr,
+    server_state: Arc<RwLock<ServerState>>,
+) {
     let client_data = ClientData::new(socket);
     let mut was_in_play_state = false;
 
@@ -353,7 +374,6 @@ async fn send_keep_alive(client_data: &ClientData) -> Result<(), PacketProcessin
     Ok(())
 }
 
-
 /// Poll upstream game server status every 10 seconds and cache the JSON response.
 fn poll_upstream_status_thread(
     addr: String,
@@ -393,11 +413,16 @@ fn poll_upstream_status_thread(
                     // Backend just went down — zero the player count in cache
                     if let Ok(mut c) = cache.write() {
                         if let Some(ref cached_json) = *c {
-                            if let Ok(mut status) = serde_json::from_str::<serde_json::Value>(cached_json) {
+                            if let Ok(mut status) =
+                                serde_json::from_str::<serde_json::Value>(cached_json)
+                            {
                                 if let Some(players) = status.get_mut("players") {
                                     players["online"] = serde_json::Value::Number(0.into());
                                 }
-                                *c = Some(serde_json::to_string(&status).unwrap_or_else(|_| cached_json.clone()));
+                                *c = Some(
+                                    serde_json::to_string(&status)
+                                        .unwrap_or_else(|_| cached_json.clone()),
+                                );
                             }
                         }
                     }
@@ -410,7 +435,9 @@ fn poll_upstream_status_thread(
     }
 }
 
-fn fetch_upstream_status_blocking(addr: &str) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+fn fetch_upstream_status_blocking(
+    addr: &str,
+) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
     use std::io::{Read, Write};
     use std::net::TcpStream;
     use std::time::Duration;
@@ -443,8 +470,12 @@ fn fetch_upstream_status_blocking(addr: &str) -> Result<String, Box<dyn std::err
                     return Ok(json);
                 }
             }
-            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock
-                || e.kind() == std::io::ErrorKind::TimedOut => break,
+            Err(e)
+                if e.kind() == std::io::ErrorKind::WouldBlock
+                    || e.kind() == std::io::ErrorKind::TimedOut =>
+            {
+                break;
+            }
             Err(e) => return Err(e.into()),
         }
     }
@@ -454,12 +485,20 @@ fn fetch_upstream_status_blocking(addr: &str) -> Result<String, Box<dyn std::err
 fn extract_status_json(data: &[u8]) -> Option<String> {
     let mut i = 0;
     // Skip packet length varint
-    while i < data.len() && data[i] & 0x80 != 0 { i += 1; }
-    if i >= data.len() { return None; }
+    while i < data.len() && data[i] & 0x80 != 0 {
+        i += 1;
+    }
+    if i >= data.len() {
+        return None;
+    }
     i += 1;
     // Skip packet id varint
-    while i < data.len() && data[i] & 0x80 != 0 { i += 1; }
-    if i >= data.len() { return None; }
+    while i < data.len() && data[i] & 0x80 != 0 {
+        i += 1;
+    }
+    if i >= data.len() {
+        return None;
+    }
     i += 1;
     // Read string length varint
     let mut str_len: usize = 0;
@@ -469,11 +508,15 @@ fn extract_status_json(data: &[u8]) -> Option<String> {
         shift += 7;
         i += 1;
     }
-    if i >= data.len() { return None; }
+    if i >= data.len() {
+        return None;
+    }
     str_len |= ((data[i] & 0x7f) as usize) << shift;
     i += 1;
-    if i + str_len > data.len() { return None; }
-    String::from_utf8(data[i..i+str_len].to_vec()).ok()
+    if i + str_len > data.len() {
+        return None;
+    }
+    String::from_utf8(data[i..i + str_len].to_vec()).ok()
 }
 
 /// Write a player IP to the game_validated BPF map (pinned at /sys/fs/bpf/game_validated).
