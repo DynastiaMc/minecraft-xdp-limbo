@@ -40,11 +40,26 @@ impl PacketHandler for HandshakePacket {
                         }
                     }
                     State::Login => {
+                        // [Dynastia] Version gate: kick before login if too old
+                        let effective_floor = std::cmp::max(766, server_state.version_gate_protocol());
+                        if client_state.protocol_version().version_number() < effective_floor {
+                            let msg = server_state.version_gate_kick_message()
+                                .replace("<version>", &server_state.version_gate_version_name());
+                            client_state.kick(&msg);
+                            return Ok(batch); // kick happens in network.rs after handler returns
+                        }
                         begin_login(client_state, server_state, &self.hostname)?;
                         Ok(batch)
                     }
                     State::Transfer => {
                         if server_state.accept_transfers() {
+                            let effective_floor = std::cmp::max(766, server_state.version_gate_protocol());
+                            if client_state.protocol_version().version_number() < effective_floor {
+                                let msg = server_state.version_gate_kick_message()
+                                    .replace("<version>", &server_state.version_gate_version_name());
+                                client_state.kick(&msg);
+                                return Ok(batch);
+                            }
                             client_state.set_state(State::Login);
                             begin_login(client_state, server_state, &self.hostname)?;
                             Ok(batch)
