@@ -42,6 +42,11 @@ pub struct UpstreamConfig {
     pub transfer_port: i32,
     /// Health check retry interval in seconds (when game server is down).
     pub retry_secs: u64,
+    /// Spacing in milliseconds between deferred transfers when backend
+    /// recovers. Prevents a thundering herd: N held players are drained at
+    /// most `1000 / transfer_rate_slot_ms` per second. 0 disables the stagger
+    /// (all held players transfer on their next retry tick).
+    pub transfer_rate_slot_ms: u64,
 }
 
 impl Default for UpstreamConfig {
@@ -52,6 +57,7 @@ impl Default for UpstreamConfig {
             transfer_host: String::new(),
             transfer_port: 0,
             retry_secs: 5,
+            transfer_rate_slot_ms: 200,
         }
     }
 }

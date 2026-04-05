@@ -13,7 +13,7 @@ use std::io::Read;
 use std::num::TryFromIntError;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::time::Duration;
 use thiserror::Error;
 use tracing::debug;
@@ -116,6 +116,7 @@ pub struct ServerState {
     upstream_transfer_host: String,
     upstream_transfer_port: i32,
     upstream_retry_secs: u64,
+    upstream_transfer_rate_slot_ms: u64,
     vg_protocol: i32,
     vg_version: String,
     vg_min_protocol: i32,
@@ -125,6 +126,20 @@ pub struct ServerState {
     vg_kick_message: String,
     /// Cached JSON status response from the upstream game server (polled periodically).
     cached_upstream_status: Arc<std::sync::RwLock<Option<String>>>,
+    /// [Dynastia] Live flag: true when the last upstream poll succeeded.
+    /// Read by the transfer decision in `process_packet` to decide whether to
+    /// transfer the player immediately (alive) or hold them on the limbo and
+    /// retry on recovery (down). Updated by `poll_upstream_status_thread`.
+    upstream_alive: Arc<AtomicBool>,
+    /// [Dynastia] Monotonic cursor for rate-limiting deferred transfers on
+    /// backend recovery. When a held player wakes up and sees `upstream_alive`
+    /// true, they claim the next slot from this cursor (advancing it by
+    /// `TRANSFER_SLOT_MS`) and wait until their assigned instant before
+    /// sending the Transfer packet. Prevents a thundering herd of N players
+    /// all reconnecting to the backend within the same tick.
+    /// `Option` wrapper because `Instant` has no `Default` impl — lazily
+    /// initialized to `now()` on first claim.
+    transfer_slot_cursor: Arc<std::sync::Mutex<Option<std::time::Instant>>>,
 }
 
 impl ServerState {
@@ -265,6 +280,7 @@ impl ServerState {
     pub fn upstream_transfer_host(&self) -> &str { &self.upstream_transfer_host }
     pub fn upstream_transfer_port(&self) -> i32 { self.upstream_transfer_port }
     pub fn upstream_retry_secs(&self) -> u64 { self.upstream_retry_secs }
+    pub fn upstream_transfer_rate_slot_ms(&self) -> u64 { self.upstream_transfer_rate_slot_ms }
 
     pub fn vg_protocol(&self) -> i32 { self.vg_protocol }
     pub fn vg_version(&self) -> String { self.vg_version.clone() }
@@ -325,6 +341,30 @@ impl ServerState {
         self.cached_upstream_status.clone()
     }
 
+    /// [Dynastia] Whether the upstream game server is currently reachable.
+    /// Reads from an AtomicBool flipped by `poll_upstream_status_thread`.
+    pub fn upstream_alive(&self) -> bool {
+        self.upstream_alive.load(Ordering::Acquire)
+    }
+
+    /// [Dynastia] Shared handle for the poller thread to update the live flag.
+    pub fn upstream_alive_handle(&self) -> Arc<AtomicBool> {
+        self.upstream_alive.clone()
+    }
+
+    /// [Dynastia] Claim the next transfer slot from the rate-limit cursor.
+    /// Returns the `Instant` at which the caller is allowed to send the
+    /// Transfer packet. Each call advances the cursor by `slot_ms` so that
+    /// concurrent callers receive strictly spaced slots. Slots never move
+    /// backwards in time — if the cursor is in the past, it snaps to now.
+    pub fn claim_transfer_slot(&self, slot_ms: u64) -> std::time::Instant {
+        let mut cursor = self.transfer_slot_cursor.lock().unwrap();
+        let now = std::time::Instant::now();
+        let slot = cursor.map_or(now, |c| c.max(now));
+        *cursor = Some(slot + std::time::Duration::from_millis(slot_ms));
+        slot
+    }
+
     pub const fn server_commands(&self) -> &ServerCommands {
         &self.server_commands
     }
@@ -375,6 +415,7 @@ pub struct ServerStateBuilder {
     upstream_transfer_host: String,
     upstream_transfer_port: i32,
     upstream_retry_secs: u64,
+    upstream_transfer_rate_slot_ms: u64,
     vg_protocol: i32,
     vg_version: String,
     vg_min_protocol: i32,
@@ -661,6 +702,7 @@ impl ServerStateBuilder {
         self.upstream_transfer_host = cfg.transfer_host.clone();
         self.upstream_transfer_port = cfg.transfer_port;
         self.upstream_retry_secs = cfg.retry_secs;
+        self.upstream_transfer_rate_slot_ms = cfg.transfer_rate_slot_ms;
         self
     }
 
@@ -723,6 +765,7 @@ impl ServerStateBuilder {
             upstream_transfer_host: self.upstream_transfer_host,
             upstream_transfer_port: self.upstream_transfer_port,
             upstream_retry_secs: self.upstream_retry_secs,
+            upstream_transfer_rate_slot_ms: self.upstream_transfer_rate_slot_ms,
             vg_protocol: self.vg_protocol,
             vg_version: if self.vg_version.is_empty() { "1.21".into() } else { self.vg_version },
             vg_min_protocol: self.vg_min_protocol,
@@ -731,6 +774,8 @@ impl ServerStateBuilder {
             vg_max_version_name: self.vg_max_version_name,
             vg_kick_message: if self.vg_kick_message.is_empty() { "This server accepts Minecraft <range> only.".into() } else { self.vg_kick_message },
             cached_upstream_status: Arc::new(std::sync::RwLock::new(None)),
+            upstream_alive: Arc::new(AtomicBool::new(false)),
+            transfer_slot_cursor: Arc::new(std::sync::Mutex::new(None)),
         })
     }
 }

@@ -4,7 +4,7 @@ use minecraft_protocol::prelude::ProtocolVersion;
 use net::packet_stream::{PacketStream, PacketStreamError};
 use net::raw_packet::RawPacket;
 use std::ops::Add;
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 use std::time::Duration;
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpStream;
@@ -45,6 +45,13 @@ impl ClientData {
 
     pub async fn stream(&self) -> tokio::sync::MutexGuard<'_, PacketStream<TcpStream>> {
         self.packet_stream.lock().await
+    }
+
+    /// [Dynastia] Returns a weak reference to the packet stream, for background
+    /// tasks (deferred upstream transfer) that must detect client disconnect via
+    /// upgrade() failure once `handle_client` drops its ClientData.
+    pub fn stream_weak(&self) -> Weak<Mutex<PacketStream<TcpStream>>> {
+        Arc::downgrade(&self.packet_stream)
     }
 
     pub async fn write_packet(&self, raw_packet: RawPacket) -> Result<(), PacketStreamError> {

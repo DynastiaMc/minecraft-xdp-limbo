@@ -53,23 +53,39 @@ impl Server {
             let upstream_addr = self.state.read().await.upstream_status_addr().to_string();
             if !upstream_addr.is_empty() {
                 let handle = self.state.read().await.upstream_status_handle();
+                let alive = self.state.read().await.upstream_alive_handle();
+                let poll_secs = self.state.read().await.upstream_poll_secs();
 
-                // Load persisted cache from disk (survives VPS reboots)
+                // Load persisted cache from disk (survives VPS reboots).
+                // If we have a cached JSON from a previous run, assume the
+                // backend is still alive until the first poll proves otherwise.
+                // This avoids holding the first few players on the limbo during
+                // the 2s initial poller delay after a loader restart.
                 if let Ok(json) = std::fs::read_to_string("./upstream_status.json") {
                     if let Ok(mut c) = handle.write() {
                         *c = Some(json);
                     }
                     self.state.write().await.set_reply_to_status_live(true);
+                    alive.store(true, std::sync::atomic::Ordering::Release);
                     info!("Loaded persisted upstream status from disk");
                 } else {
-                    // No cache — don't reply to status pings until first poll succeeds
+                    // No cache — don't reply to status pings until first poll succeeds,
+                    // and hold any incoming players on the limbo until the poller
+                    // confirms the backend is up.
                     self.state.write().await.set_reply_to_status_live(false);
+                    alive.store(false, std::sync::atomic::Ordering::Release);
                     info!("No persisted upstream status — server appears offline until first poll");
                 }
 
                 let state_for_poller = std::sync::Arc::clone(&self.state);
                 std::thread::spawn(move || {
-                    poll_upstream_status_thread(upstream_addr, handle, state_for_poller);
+                    poll_upstream_status_thread(
+                        upstream_addr,
+                        handle,
+                        alive,
+                        poll_secs,
+                        state_for_poller,
+                    );
                 });
             }
         }
@@ -196,24 +212,21 @@ async fn process_packet(
         );
         info!("{} joined the game", username,);
 
-        // --- Dynastia XDP patch: write IP to game_validated + auto-transfer ---
-        if let std::net::IpAddr::V4(ipv4) = addr.ip() {
-            let ip_bytes = ipv4.octets();
-            let ip_u32 = u32::from_le_bytes(ip_bytes);
-            // Write to BPF map via bpf() syscall
-            match write_game_validated(ip_u32) {
-                Ok(()) => info!("game_validated: added {}", ipv4),
-                Err(e) => warn!("game_validated write failed: {}", e),
-            }
-        }
-
-        // Auto-transfer to game server after a short delay
-        let (transfer_host, transfer_port, retry_secs) = {
+        // --- Dynastia XDP patch: auto-transfer to backend with upstream health check ---
+        // If the backend is reachable, transfer immediately (happy path).
+        // If the backend is down, hold the player on the limbo and spawn a
+        // deferred transfer task that retries every `retry_secs` until the
+        // upstream poller flips `upstream_alive` back to true, then sends the
+        // Transfer packet. The BPF `game_validated` write is done at the
+        // actual transfer point (not at login), so held players don't occupy a
+        // whitelist slot while they're still on the limbo.
+        let (transfer_host, transfer_port, retry_secs, slot_ms) = {
             let ss = server_state.read().await;
             (
                 ss.upstream_transfer_host().to_string(),
                 ss.upstream_transfer_port(),
                 ss.upstream_retry_secs(),
+                ss.upstream_transfer_rate_slot_ms(),
             )
         };
         if transfer_port > 0 {
@@ -221,26 +234,133 @@ async fn process_packet(
             // By this point, the client already passed the version check.
             drop(client_state);
             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-            let transfer_start = std::time::Instant::now();
-            let mut cs = client_data.client().await;
-            let pv = cs.protocol_version();
-            drop(cs);
-            let pkt = TransferPacket {
-                host: transfer_host.clone(),
-                port: transfer_port.into(),
+            let pv = client_data.protocol_version().await;
+            let ipv4_opt: Option<std::net::Ipv4Addr> = match addr.ip() {
+                std::net::IpAddr::V4(v4) => Some(v4),
+                _ => None,
             };
-            if let Ok(raw) = PacketRegistry::Transfer(pkt).encode_packet(pv) {
-                let _ = client_data.write_packet(raw).await;
-                info!(
-                    "Transferred {} to {}:{} in {}ms",
-                    username,
-                    transfer_host,
-                    transfer_port,
-                    transfer_start.elapsed().as_millis()
-                );
+
+            // Read the live upstream flag (set by the poller thread).
+            if server_state.read().await.upstream_alive() {
+                // Happy path: backend reachable, transfer immediately.
+                if let Some(ipv4) = ipv4_opt {
+                    let ip_u32 = u32::from_le_bytes(ipv4.octets());
+                    match write_game_validated(ip_u32) {
+                        Ok(()) => info!("game_validated: added {}", ipv4),
+                        Err(e) => warn!("game_validated write failed: {}", e),
+                    }
+                }
+                let transfer_start = std::time::Instant::now();
+                let pkt = TransferPacket {
+                    host: transfer_host.clone(),
+                    port: transfer_port.into(),
+                };
+                if let Ok(raw) = PacketRegistry::Transfer(pkt).encode_packet(pv) {
+                    let _ = client_data.write_packet(raw).await;
+                    info!(
+                        "Transferred {} to {}:{} in {}ms",
+                        username,
+                        transfer_host,
+                        transfer_port,
+                        transfer_start.elapsed().as_millis()
+                    );
+                }
+                // Return early — skip the rest of the batch processing for this packet
+                return Ok(());
             }
-            // Return early — skip the rest of the batch processing for this packet
-            return Ok(());
+
+            // Backend down — hold on limbo + spawn deferred transfer task.
+            let retry = std::time::Duration::from_secs(retry_secs.max(1));
+            info!(
+                "{} holding on limbo: backend down, will retry every {}s",
+                username,
+                retry.as_secs()
+            );
+            let stream_weak = client_data.stream_weak();
+            let state_clone = Arc::clone(server_state);
+            let host_clone = transfer_host.clone();
+            let username_clone = username.clone();
+            let hold_start = std::time::Instant::now();
+            tokio::spawn(async move {
+                loop {
+                    tokio::time::sleep(retry).await;
+                    // Disconnect detection: if handle_client already exited and
+                    // dropped its ClientData, the packet_stream Arc is gone and
+                    // stream_weak.upgrade() returns None. Stop retrying.
+                    let Some(stream_arc) = stream_weak.upgrade() else {
+                        debug!(
+                            "deferred transfer: {} disconnected before recovery",
+                            username_clone
+                        );
+                        return;
+                    };
+                    if !state_clone.read().await.upstream_alive() {
+                        drop(stream_arc);
+                        continue;
+                    }
+                    // Backend back up — claim a rate-limit slot to stagger
+                    // transfers and avoid a thundering herd when N held
+                    // players wake up in the same poll cycle. slot_ms is
+                    // configurable via `UpstreamConfig::transfer_rate_slot_ms`
+                    // (0 = no stagger). Default 200ms → 5 transfers/s.
+                    let slot = state_clone.read().await.claim_transfer_slot(slot_ms);
+                    let until_slot = slot.saturating_duration_since(std::time::Instant::now());
+                    // Release the stream lock during any wait so keep-alive
+                    // ticks can still fire on the limbo connection.
+                    drop(stream_arc);
+                    if !until_slot.is_zero() {
+                        tokio::time::sleep(until_slot).await;
+                    }
+                    // Re-check disconnect after slot wait.
+                    let Some(stream_arc) = stream_weak.upgrade() else {
+                        debug!(
+                            "deferred transfer: {} disconnected during slot wait",
+                            username_clone
+                        );
+                        return;
+                    };
+                    // Re-check alive in case backend flapped back down.
+                    if !state_clone.read().await.upstream_alive() {
+                        drop(stream_arc);
+                        continue;
+                    }
+                    if let Some(ipv4) = ipv4_opt {
+                        let ip_u32 = u32::from_le_bytes(ipv4.octets());
+                        match write_game_validated(ip_u32) {
+                            Ok(()) => info!("game_validated: added {} (deferred)", ipv4),
+                            Err(e) => warn!(
+                                "game_validated write failed for {}: {}",
+                                ipv4, e
+                            ),
+                        }
+                    }
+                    let pkt = TransferPacket {
+                        host: host_clone.clone(),
+                        port: transfer_port.into(),
+                    };
+                    if let Ok(raw) = PacketRegistry::Transfer(pkt).encode_packet(pv) {
+                        let mut stream = stream_arc.lock().await;
+                        if stream.write_packet(raw).await.is_ok() {
+                            info!(
+                                "Deferred transfer: {} → {}:{} after {}s hold (slot +{}ms)",
+                                username_clone,
+                                host_clone,
+                                transfer_port,
+                                hold_start.elapsed().as_secs(),
+                                until_slot.as_millis()
+                            );
+                        }
+                    }
+                    return;
+                }
+            });
+            // Fall through to normal limbo join flow so the player actually
+            // spawns in the limbo world (Login Play + Configuration packets).
+            // The deferred task will send the Transfer packet later, once the
+            // upstream poller flips `upstream_alive` back to true.
+            // Re-acquire client_state: it was dropped before the 500ms sleep,
+            // but the `should_kick` check below still needs it.
+            client_state = client_data.client().await;
         }
     }
 
@@ -374,16 +494,23 @@ async fn send_keep_alive(client_data: &ClientData) -> Result<(), PacketProcessin
     Ok(())
 }
 
-/// Poll upstream game server status every 10 seconds and cache the JSON response.
+/// Poll upstream game server status and cache the JSON response.
+/// Also flips the `alive` AtomicBool so the transfer decision (in process_packet)
+/// can hold players on the limbo while the backend is unreachable and resume
+/// them once it recovers. Poll interval comes from `[upstream].poll_secs` in
+/// gate.toml (default 10).
 fn poll_upstream_status_thread(
     addr: String,
     cache: std::sync::Arc<std::sync::RwLock<Option<String>>>,
+    alive: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    poll_secs: u64,
     server_state: std::sync::Arc<tokio::sync::RwLock<ServerState>>,
 ) {
-    let poll_secs: u64 = 10; // default, overridden by caller
+    use std::sync::atomic::Ordering;
+    let poll_secs = poll_secs.max(1);
 
     eprintln!("[poller] Starting for {} (every {}s)", addr, poll_secs);
-    let mut backend_was_up = true;
+    let mut backend_was_up = alive.load(Ordering::Acquire);
 
     std::thread::sleep(std::time::Duration::from_secs(2));
 
@@ -395,6 +522,8 @@ fn poll_upstream_status_thread(
                 if let Ok(mut c) = cache.write() {
                     *c = Some(json);
                 }
+                // Flip the live flag so in-flight holds can resume their Transfer.
+                alive.store(true, Ordering::Release);
                 // Enable status replies (AtomicBool + try_write ServerState)
                 if let Ok(mut s) = server_state.try_write() {
                     if !s.reply_to_status() {
@@ -403,12 +532,13 @@ fn poll_upstream_status_thread(
                     }
                 }
                 if !backend_was_up {
-                    eprintln!("[poller] Backend is back up");
+                    eprintln!("[poller] Backend is back up — held players will be transferred");
                     backend_was_up = true;
                 }
             }
             Err(e) => {
                 eprintln!("[poller] fetch failed: {}", e);
+                alive.store(false, Ordering::Release);
                 if backend_was_up {
                     // Backend just went down — zero the player count in cache
                     if let Ok(mut c) = cache.write() {
