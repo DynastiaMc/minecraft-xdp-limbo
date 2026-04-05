@@ -44,7 +44,7 @@ impl PacketHandler for HandshakePacket {
                         let client_proto = client_state.protocol_version().version_number();
                         if !server_state.vg_in_range(client_proto) {
                             let msg = server_state.vg_kick_message()
-                                .replace("<range>", &server_state.vg_range_string());
+                                .replace("<version>", &server_state.backend_version_name());
                             client_state.kick(&msg);
                             return Ok(batch);
                         }
@@ -56,7 +56,7 @@ impl PacketHandler for HandshakePacket {
                             let client_proto = client_state.protocol_version().version_number();
                             if !server_state.vg_in_range(client_proto) {
                                 let msg = server_state.vg_kick_message()
-                                    .replace("<range>", &server_state.vg_range_string());
+                                    .replace("<version>", &server_state.backend_version_name());
                                 client_state.kick(&msg);
                                 return Ok(batch);
                             }

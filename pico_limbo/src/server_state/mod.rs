@@ -4,7 +4,7 @@ use crate::server::game_mode::GameMode;
 use base64::engine::general_purpose;
 use base64::{Engine, alphabet, engine};
 use minecraft_packets::play::boss_bar_packet::{BossBarColor, BossBarDivision};
-use minecraft_protocol::prelude::{BinaryReaderError, Dimension};
+use minecraft_protocol::prelude::{BinaryReaderError, Dimension, ProtocolVersion};
 use pico_structures::prelude::{Schematic, SchematicError, World, WorldLoadingError};
 use pico_text_component::prelude::{Component, MiniMessageError, parse_mini_message};
 pub use server_commands::{ServerCommand, ServerCommands};
@@ -117,12 +117,8 @@ pub struct ServerState {
     upstream_transfer_port: i32,
     upstream_retry_secs: u64,
     upstream_transfer_rate_slot_ms: u64,
-    vg_protocol: i32,
-    vg_version: String,
     vg_min_protocol: i32,
-    vg_min_version_name: String,
     vg_max_protocol: i32,
-    vg_max_version_name: String,
     vg_kick_message: String,
     /// Cached JSON status response from the upstream game server (polled periodically).
     cached_upstream_status: Arc<std::sync::RwLock<Option<String>>>,
@@ -282,37 +278,43 @@ impl ServerState {
     pub fn upstream_retry_secs(&self) -> u64 { self.upstream_retry_secs }
     pub fn upstream_transfer_rate_slot_ms(&self) -> u64 { self.upstream_transfer_rate_slot_ms }
 
-    pub fn vg_protocol(&self) -> i32 { self.vg_protocol }
-    pub fn vg_version(&self) -> String { self.vg_version.clone() }
     pub fn vg_min_protocol(&self) -> i32 { self.vg_min_protocol }
-    pub fn vg_min_version_name(&self) -> String { self.vg_min_version_name.clone() }
     pub fn vg_max_protocol(&self) -> i32 { self.vg_max_protocol }
-    pub fn vg_max_version_name(&self) -> String { self.vg_max_version_name.clone() }
     pub fn vg_kick_message(&self) -> String { self.vg_kick_message.clone() }
-    pub fn vg_effective_min(&self) -> i32 { std::cmp::max(766, self.vg_min_protocol) }
+
+    /// Effective lower bound for the version gate. Clamped to 766 (1.20.5), the
+    /// hard floor since Transfer packets don't exist below that version.
+    pub fn vg_effective_min(&self) -> i32 {
+        std::cmp::max(766, self.vg_min_protocol)
+    }
+
+    /// Effective upper bound. Clamped to the latest protocol PicoLimbo can parse —
+    /// beyond that, login would fail silently (unknown packet formats).
+    pub fn vg_effective_max(&self) -> i32 {
+        std::cmp::min(ProtocolVersion::latest().version_number(), self.vg_max_protocol)
+    }
+
     pub fn vg_in_range(&self, proto: i32) -> bool {
-        proto >= self.vg_effective_min() && (self.vg_max_protocol == 0 || proto <= self.vg_max_protocol)
+        proto >= self.vg_effective_min() && proto <= self.vg_effective_max()
     }
-    pub fn vg_range_string(&self) -> String {
-        if self.vg_max_protocol == 0 || self.vg_max_version_name.is_empty() {
-            format!("{}+", self.vg_min_version_name)
-        } else {
-            format!("{} - {}", self.vg_min_version_name, self.vg_max_version_name)
-        }
-    }
-    pub fn vg_status_protocol(&self, client_proto: i32) -> i32 {
-        if self.vg_in_range(client_proto) {
-            client_proto
-        } else {
-            std::cmp::max(766, self.vg_protocol)
-        }
-    }
-    pub fn vg_status_name(&self, client_proto: i32) -> String {
-        if self.vg_in_range(client_proto) {
-            self.vg_version.clone()
-        } else {
-            self.vg_version.clone()
-        }
+
+    /// Backend's advertised version string from the cached upstream status.
+    /// Used by the kick message (`<version>` placeholder).
+    ///
+    /// Reads `version.name` verbatim (e.g. "Paper 1.21.11"). The value is
+    /// free-form text written by the backend server software and reflects the
+    /// native running version — ViaVersion rewrites `version.protocol` but
+    /// leaves `version.name` alone.
+    ///
+    /// Returns an empty string if no cache exists. In practice this is
+    /// unreachable at kick time: the limbo refuses to reply to status until the
+    /// first upstream poll succeeds, so no client reaches login before the
+    /// cache is populated.
+    pub fn backend_version_name(&self) -> String {
+        self.cached_upstream_status()
+            .and_then(|json| serde_json::from_str::<serde_json::Value>(&json).ok())
+            .and_then(|v| v["version"]["name"].as_str().map(String::from))
+            .unwrap_or_default()
     }
 
     pub fn set_reply_to_status_live(&mut self, val: bool) {
@@ -416,12 +418,8 @@ pub struct ServerStateBuilder {
     upstream_transfer_port: i32,
     upstream_retry_secs: u64,
     upstream_transfer_rate_slot_ms: u64,
-    vg_protocol: i32,
-    vg_version: String,
     vg_min_protocol: i32,
-    vg_min_version_name: String,
     vg_max_protocol: i32,
-    vg_max_version_name: String,
     vg_kick_message: String,
 }
 
@@ -707,12 +705,8 @@ impl ServerStateBuilder {
     }
 
     pub fn set_version_gate(&mut self, cfg: &crate::configuration::config::VersionGateConfig) -> &mut Self {
-        self.vg_protocol = cfg.protocol;
-        self.vg_version = cfg.version.clone();
         self.vg_min_protocol = cfg.min_protocol;
-        self.vg_min_version_name = cfg.min_version_name.clone();
         self.vg_max_protocol = cfg.max_protocol;
-        self.vg_max_version_name = cfg.max_version_name.clone();
         self.vg_kick_message = cfg.kick_message.clone();
         self
     }
@@ -766,13 +760,9 @@ impl ServerStateBuilder {
             upstream_transfer_port: self.upstream_transfer_port,
             upstream_retry_secs: self.upstream_retry_secs,
             upstream_transfer_rate_slot_ms: self.upstream_transfer_rate_slot_ms,
-            vg_protocol: self.vg_protocol,
-            vg_version: if self.vg_version.is_empty() { "1.21".into() } else { self.vg_version },
             vg_min_protocol: self.vg_min_protocol,
-            vg_min_version_name: if self.vg_min_version_name.is_empty() { "1.21".into() } else { self.vg_min_version_name },
             vg_max_protocol: self.vg_max_protocol,
-            vg_max_version_name: self.vg_max_version_name,
-            vg_kick_message: if self.vg_kick_message.is_empty() { "This server accepts Minecraft <range> only.".into() } else { self.vg_kick_message },
+            vg_kick_message: if self.vg_kick_message.is_empty() { "This server accepts Minecraft <version> only.".into() } else { self.vg_kick_message },
             cached_upstream_status: Arc::new(std::sync::RwLock::new(None)),
             upstream_alive: Arc::new(AtomicBool::new(false)),
             transfer_slot_cursor: Arc::new(std::sync::Mutex::new(None)),

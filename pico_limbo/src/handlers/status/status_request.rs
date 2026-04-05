@@ -16,17 +16,21 @@ impl PacketHandler for StatusRequestPacket {
     ) -> Result<Batch<PacketRegistry>, PacketHandlerError> {
         let mut batch = Batch::new();
 
-        // [Dynastia] Use cached upstream status (MOTD, players, icon from game server).
-        // Override version with the limbo's version gate:
-        // - Client in range → server's native version + client's protocol → green bars
-        // - Client out of range → server's native version + server's protocol → red X
+        // Serve the cached upstream status verbatim (MOTD, players, icon,
+        // version.name, version.protocol — everything from the backend). The backend
+        // is the single source of truth for what version to advertise.
+        //
+        // Only tweak: if the client's protocol is within the accepted range, echo
+        // their protocol in version.protocol so their Minecraft client shows green
+        // bars (the standard ViaVersion trick). Clients outside the range see the
+        // backend's protocol unchanged → natural red X with the backend version as
+        // the label.
         let packet = if let Some(cached_json) = server_state.cached_upstream_status() {
             let client_proto = client_state.protocol_version().version_number();
             if let Ok(mut status) = serde_json::from_str::<serde_json::Value>(&cached_json) {
-                status["version"] = serde_json::json!({
-                    "name": server_state.vg_status_name(client_proto),
-                    "protocol": server_state.vg_status_protocol(client_proto)
-                });
+                if server_state.vg_in_range(client_proto) {
+                    status["version"]["protocol"] = serde_json::Value::from(client_proto);
+                }
                 StatusResponsePacket::from_raw_json(
                     serde_json::to_string(&status).unwrap_or(cached_json),
                 )

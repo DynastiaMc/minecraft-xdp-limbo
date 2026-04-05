@@ -2,17 +2,21 @@ bind = "0.0.0.0:25567"
 accept_transfers = true
 fetch_player_skins = false
 
+welcome_message = "<gold>✦ <yellow>Attente du serveur <dark_gray>— <gray>Ne te déconnecte pas, tu seras transféré automatiquement."
+action_bar = ""
+
 [forwarding]
 method = "NONE"
 
 [version_gate]
-protocol = 769
-version = "1.21.4"
-min_protocol = 768
-min_version_name = "1.21"
-max_protocol = 0
-max_version_name = ""
-kick_message = "§6» §e» §6§lDYNASTIA §e« §6«\n\n§cLe serveur accepte uniquement les versions §6<range>§c."
+min_protocol = 767
+max_protocol = 775
+kick_message = """
+§6» §e» §6§lDYNASTIA §e« §6«
+
+§cTa version de Minecraft n'est pas compatible.
+
+§eLe serveur tourne actuellement en §6<version>§e."""
 
 [upstream]
 status_addr = "10.99.0.2:25568"
@@ -20,3 +24,32 @@ poll_secs = 10
 transfer_host = "play.dynastia.fr"
 transfer_port = 25568
 retry_secs = 5
+
+[world.boundaries]
+enabled = false
+
+[commands]
+spawn = ""
+fly = ""
+fly_speed = ""
+transfer = ""
+
+[tab_list]
+enabled = true
+header = """
+
+<gold>✦ <yellow>Attente du serveur <gold>✦
+"""
+footer = "<gray>Tu seras transféré automatiquement"
+player_listed = false
+
+[boss_bar]
+enabled = false
+
+[title]
+enabled = true
+title = "<gold>Attente du serveur"
+subtitle = "<white>Ne te déconnecte pas !"
+fade_in = 10
+stay = 2000000000
+fade_out = 10

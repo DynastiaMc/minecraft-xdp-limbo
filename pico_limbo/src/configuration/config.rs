@@ -62,38 +62,33 @@ impl Default for UpstreamConfig {
     }
 }
 
-/// Version gate: only players within the accepted version range can join.
-/// The hard floor (1.20.5 / protocol 766) is always enforced regardless of config
-/// because Transfer packets don't exist below 1.20.5.
+/// Version gate: only players within the accepted protocol range can join.
+///
+/// Display info (version name/protocol shown in server list and kick messages)
+/// is never stored here — it comes from the cached upstream backend status, so
+/// the limbo always advertises the backend's "recommended version" to clients.
+///
+/// Acceptance bounds are clamped at runtime:
+///   - hard floor 766 (1.20.5, first version with Transfer packet)
+///   - hard ceiling `ProtocolVersion::latest()` (what PicoLimbo can actually parse)
 #[derive(Serialize, Deserialize)]
 #[serde(default)]
 pub struct VersionGateConfig {
-    /// Server's native protocol version (displayed in server list for compatible clients).
-    pub protocol: i32,
-    /// Server's native version name (displayed in server list).
-    pub version: String,
-    /// Minimum accepted protocol (inclusive). Hard floor 766 always applies.
+    /// Minimum accepted protocol (inclusive). Clamped to >= 766 at runtime.
     pub min_protocol: i32,
-    /// Minimum version name (for kick message).
-    pub min_version_name: String,
-    /// Maximum accepted protocol (inclusive). 0 = no upper limit.
+    /// Maximum accepted protocol (inclusive). Clamped to <= ProtocolVersion::latest() at runtime.
     pub max_protocol: i32,
-    /// Maximum version name (for kick message).
-    pub max_version_name: String,
-    /// Kick message. <range> is replaced by "min - max" or "min+" if no max.
+    /// Kick message sent when a client is outside the accepted range.
+    /// `<version>` is replaced with the cached backend version name.
     pub kick_message: String,
 }
 
 impl Default for VersionGateConfig {
     fn default() -> Self {
         Self {
-            protocol: 768,
-            version: "1.21".into(),
-            min_protocol: 768,
-            min_version_name: "1.21".into(),
-            max_protocol: 0,
-            max_version_name: String::new(),
-            kick_message: "This server accepts Minecraft <range> only.".into(),
+            min_protocol: 767, // 1.21.0
+            max_protocol: 775, // 26.1
+            kick_message: "This server accepts Minecraft <version> only.".into(),
         }
     }
 }
