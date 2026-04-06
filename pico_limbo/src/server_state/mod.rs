@@ -298,23 +298,23 @@ impl ServerState {
         proto >= self.vg_effective_min() && proto <= self.vg_effective_max()
     }
 
-    /// Backend's advertised version string from the cached upstream status.
+    /// Human-readable version string derived from the configured protocol range.
     /// Used by the kick message (`<version>` placeholder).
     ///
-    /// Reads `version.name` verbatim (e.g. "Paper 1.21.11"). The value is
-    /// free-form text written by the backend server software and reflects the
-    /// native running version — ViaVersion rewrites `version.protocol` but
-    /// leaves `version.name` alone.
-    ///
-    /// Returns an empty string if no cache exists. In practice this is
-    /// unreachable at kick time: the limbo refuses to reply to status until the
-    /// first upstream poll succeeds, so no client reaches login before the
-    /// cache is populated.
+    /// Resolves `vg_effective_min` / `vg_effective_max` to their humanized
+    /// version names via `ProtocolVersion::from().humanize()`. If min == max,
+    /// returns a single version (e.g. "1.21.2"); otherwise a range
+    /// (e.g. "1.21.2 – 1.21.4").
     pub fn backend_version_name(&self) -> String {
-        self.cached_upstream_status()
-            .and_then(|json| serde_json::from_str::<serde_json::Value>(&json).ok())
-            .and_then(|v| v["version"]["name"].as_str().map(String::from))
-            .unwrap_or_default()
+        let min_ver = ProtocolVersion::from(self.vg_effective_min());
+        let max_ver = ProtocolVersion::from(self.vg_effective_max());
+        let min_name = min_ver.humanize();
+        let max_name = max_ver.humanize();
+        if min_name == max_name {
+            min_name.to_string()
+        } else {
+            format!("{min_name} \u{2013} {max_name}")
+        }
     }
 
     pub fn set_reply_to_status_live(&mut self, val: bool) {
