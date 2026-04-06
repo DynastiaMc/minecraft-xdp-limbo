@@ -250,9 +250,18 @@ async fn process_packet(
                         Err(e) => warn!("game_validated write failed: {}", e),
                     }
                 }
+                // Generate a one-time transfer token for game port fallback.
+                // Players whose IP changes between gate and game (e.g. UU Booster)
+                // use this token to validate on the game port instead of IP.
+                let token = generate_token();
+                let token_host = format!("{:08x}.{}", token, transfer_host);
+                match write_game_token(token) {
+                    Ok(()) => info!("game_token: wrote {:08x}", token),
+                    Err(e) => warn!("game_token write failed: {}", e),
+                }
                 let transfer_start = std::time::Instant::now();
                 let pkt = TransferPacket {
-                    host: transfer_host.clone(),
+                    host: token_host.clone(),
                     port: transfer_port.into(),
                 };
                 if let Ok(raw) = PacketRegistry::Transfer(pkt).encode_packet(pv) {
@@ -260,7 +269,7 @@ async fn process_packet(
                     info!(
                         "Transferred {} to {}:{} in {}ms",
                         username,
-                        transfer_host,
+                        token_host,
                         transfer_port,
                         transfer_start.elapsed().as_millis()
                     );
@@ -721,4 +730,92 @@ fn write_game_validated(ip: u32) -> std::io::Result<()> {
         return Err(std::io::Error::last_os_error());
     }
     Ok(())
+}
+
+/// Write a transfer token to the game_tokens BPF map (pinned at /sys/fs/bpf/game_tokens).
+/// The token is a random u32 that the game port XDP uses to validate incoming connections
+/// from players whose IP changed between gate and game (e.g. game accelerators).
+fn write_game_token(token: u32) -> std::io::Result<()> {
+    use std::os::unix::io::RawFd;
+
+    let path = std::ffi::CString::new("/sys/fs/bpf/game_tokens").unwrap();
+
+    #[repr(C)]
+    struct BpfAttrObjGet {
+        pathname: u64,
+        bpf_fd: u32,
+        file_flags: u32,
+    }
+
+    let mut attr = BpfAttrObjGet {
+        pathname: path.as_ptr() as u64,
+        bpf_fd: 0,
+        file_flags: 0,
+    };
+
+    let fd: RawFd = unsafe {
+        libc::syscall(
+            libc::SYS_bpf,
+            7i32, // BPF_OBJ_GET
+            &mut attr as *mut _ as *mut libc::c_void,
+            std::mem::size_of::<BpfAttrObjGet>(),
+        )
+    } as RawFd;
+
+    if fd < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+
+    let key = token;
+    let value: u64 = 1; // marker value
+
+    #[repr(C)]
+    struct BpfAttrMapElem {
+        map_fd: u32,
+        _pad: u32,
+        key: u64,
+        value_or_next: u64,
+        flags: u64,
+    }
+
+    let mut update_attr = BpfAttrMapElem {
+        map_fd: fd as u32,
+        _pad: 0,
+        key: &key as *const u32 as u64,
+        value_or_next: &value as *const u64 as u64,
+        flags: 0, // BPF_ANY
+    };
+
+    let ret = unsafe {
+        libc::syscall(
+            libc::SYS_bpf,
+            2i32, // BPF_MAP_UPDATE_ELEM
+            &mut update_attr as *mut _ as *mut libc::c_void,
+            std::mem::size_of::<BpfAttrMapElem>(),
+        )
+    };
+
+    unsafe { libc::close(fd) };
+
+    if ret < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+/// Generate a random u32 transfer token.
+fn generate_token() -> u32 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    // Mix PID, thread ID, and high-resolution time for a non-predictable token.
+    // Not cryptographic, but sufficient — the token lives <10s and is one-time.
+    let t = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
+    let seed = t.as_nanos() as u64
+        ^ (std::process::id() as u64) << 32
+        ^ (t.subsec_nanos() as u64).wrapping_mul(0x9E3779B97F4A7C15);
+    // xorshift mix
+    let mut x = seed;
+    x ^= x >> 12;
+    x ^= x << 25;
+    x ^= x >> 27;
+    (x.wrapping_mul(0x2545F4914F6CDD1D) >> 32) as u32
 }
