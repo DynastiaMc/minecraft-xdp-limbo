@@ -16,18 +16,19 @@ impl PacketHandler for StatusRequestPacket {
     ) -> Result<Batch<PacketRegistry>, PacketHandlerError> {
         let mut batch = Batch::new();
 
-        // Serve the cached upstream status verbatim (MOTD, players, icon,
-        // version.name, version.protocol — everything from the backend). The backend
-        // is the single source of truth for what version to advertise.
-        //
-        // Only tweak: if the client's protocol is within the accepted range, echo
-        // their protocol in version.protocol so their Minecraft client shows green
-        // bars (the standard ViaVersion trick). Clients outside the range see the
-        // backend's protocol unchanged → natural red X with the backend version as
-        // the label.
+        // Serve the cached upstream status (MOTD, players, icon) with two tweaks:
+        //  1. version.name is replaced with the configured protocol range
+        //     (e.g. "1.21.2") instead of the backend's native string.
+        //  2. If the client's protocol is in range, echo it in version.protocol
+        //     so their client shows green bars (ViaVersion trick).
         let packet = if let Some(cached_json) = server_state.cached_upstream_status() {
             let client_proto = client_state.protocol_version().version_number();
             if let Ok(mut status) = serde_json::from_str::<serde_json::Value>(&cached_json) {
+                // Replace version.name with the configured range so the server
+                // list shows e.g. "1.21.2" instead of Velocity's "1.7.2-1.21.4".
+                status["version"]["name"] = serde_json::Value::from(
+                    server_state.backend_version_name(),
+                );
                 if server_state.vg_in_range(client_proto) {
                     status["version"]["protocol"] = serde_json::Value::from(client_proto);
                 }
