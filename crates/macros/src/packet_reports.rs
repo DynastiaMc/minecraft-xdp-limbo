@@ -12,7 +12,7 @@ use syn::{Data, DeriveInput, Error, Fields, Ident, LitStr, Token, parse_macro_in
 /// Represents the "protocol_id" object within the JSON.
 #[derive(Debug, Deserialize)]
 struct PacketInfo {
-    protocol_id: u8,
+    protocol_id: i32,
 }
 
 /// Represents the mapping from packet_name to PacketInfo.
@@ -59,9 +59,9 @@ pub fn packet_report_derive(input: TokenStream) -> TokenStream {
             #[error("Decode error: Packet id is missing from the payload")]
             MissingPacketId,
             #[error("Decode error: Unknown version version={1} packet_id={0}")]
-            UnknownVersion(u8, i32),
+            UnknownVersion(i32, i32),
             #[error("Decode error: Packet not found version={0} state={1} packet_id={2}")]
-            NoCorrespondingPacket(i32, State, u8),
+            NoCorrespondingPacket(i32, State, i32),
             #[error("Failed to read packet")]
             Decode(#[from] BinaryReaderError),
         }
@@ -302,7 +302,7 @@ fn generate_encode_impl(
                 #enum_ident::#variant_ident(packet) => {
                     packet.encode(&mut packet_writer, protocol_version)?;
                     let packet_bytes = packet_writer.into_inner();
-                    let packet_id: u8 = match packets_version {
+                    let packet_id: i32 = match packets_version {
                         #(#report_arms)*
                         _ => return Err(PacketRegistryEncodeError::UnsupportedPacket(protocol_version, String::from(#packet_name))),
                     };

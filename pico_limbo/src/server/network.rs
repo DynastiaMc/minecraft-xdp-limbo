@@ -122,7 +122,7 @@ pub enum PacketProcessingError {
     Disconnected,
 
     #[error("Packet not found version={0} state={1} packet_id={2}")]
-    DecodePacketError(i32, State, u8),
+    DecodePacketError(i32, State, i32),
 
     #[error("{0}")]
     Custom(String),
