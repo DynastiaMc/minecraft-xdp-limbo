@@ -8,6 +8,7 @@ use minecraft_packets::configuration::client_bound_known_packs_packet::ClientBou
 use minecraft_packets::configuration::configuration_client_bound_plugin_message_packet::ConfigurationClientBoundPluginMessagePacket;
 use minecraft_packets::configuration::finish_configuration_packet::FinishConfigurationPacket;
 use minecraft_packets::configuration::registry_data_packet::RegistryDataPacket;
+use minecraft_packets::configuration::server_bound_known_packs_packet::ServerBoundKnownPacksPacket;
 use minecraft_packets::configuration::update_tags_packet::UpdateTagsPacket;
 use minecraft_packets::handshaking::handshake_packet::HandshakePacket;
 use minecraft_packets::login::custom_query_answer_packet::CustomQueryAnswerPacket;
@@ -16,7 +17,7 @@ use minecraft_packets::login::game_profile_packet::GameProfilePacket;
 use minecraft_packets::login::login_acknowledged_packet::LoginAcknowledgedPacket;
 use minecraft_packets::login::login_disconnect_packet::LoginDisconnectPacket;
 use minecraft_packets::login::login_state_packet::LoginStartPacket;
-use minecraft_packets::login::login_success_packet::LoginSuccessPacket;
+use minecraft_packets::login::login_success_packet::LoginFinishedPacket;
 use minecraft_packets::login::set_compression_packet::SetCompressionPacket;
 use minecraft_packets::play::boss_bar_packet::BossBarPacket;
 use minecraft_packets::play::chat_command_packet::ChatCommandPacket;
@@ -123,7 +124,7 @@ pub enum PacketRegistry {
         bound = "clientbound",
         name = "minecraft:login_finished"
     )]
-    LoginSuccess(LoginSuccessPacket),
+    LoginFinished(LoginFinishedPacket),
 
     #[protocol_id(
         state = "login",
@@ -156,6 +157,13 @@ pub enum PacketRegistry {
 
     #[protocol_id(
         state = "configuration",
+        bound = "serverbound",
+        name = "minecraft:select_known_packs"
+    )]
+    ServerBoundKnownPacks(ServerBoundKnownPacksPacket),
+
+    #[protocol_id(
+        state = "configuration",
         bound = "clientbound",
         name = "minecraft:custom_payload"
     )]
@@ -181,6 +189,13 @@ pub enum PacketRegistry {
         name = "minecraft:update_tags"
     )]
     UpdateTags(UpdateTagsPacket),
+
+    #[protocol_id(
+        state = "configuration",
+        bound = "clientbound",
+        name = "minecraft:keep_alive"
+    )]
+    ConfigurationClientBoundKeepAlive(ClientBoundKeepAlivePacket),
 
     #[protocol_id(
         state = "configuration",
@@ -358,7 +373,7 @@ impl PacketHandler for PacketRegistry {
         &self,
         client_state: &mut ClientState,
         server_state: &ServerState,
-    ) -> Result<Batch<PacketRegistry>, PacketHandlerError> {
+    ) -> Result<Batch, PacketHandlerError> {
         match self {
             Self::Handshake(packet) => packet.handle(client_state, server_state),
             Self::StatusRequest(packet) => packet.handle(client_state, server_state),
@@ -372,6 +387,7 @@ impl PacketHandler for PacketRegistry {
             Self::ChatCommand(packet) => packet.handle(client_state, server_state),
             Self::ChatMessage(packet) => packet.handle(client_state, server_state),
             Self::ServerBoundPlayerAbilities(packet) => packet.handle(client_state, server_state),
+            Self::ServerBoundKnownPacks(packet) => packet.handle(client_state, server_state),
             _ => Err(PacketHandlerError::custom("Unhandled packet")),
         }
     }

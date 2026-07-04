@@ -30,6 +30,7 @@ export default defineConfig({
 					{ text: "FAQ", link: "/about/faq.html" },
 					{ text: "Benchmarks", link: "/about/benchmarks.html" },
 					{ text: "Community Projects", link: "/about/community-projects.html" },
+					{ text: "Troubleshooting", link: "/about/troubleshooting.html" },
 				],
 			},
 			{
@@ -39,6 +40,8 @@ export default defineConfig({
 					{ text: "Boss Bar", link: "/config/boss-bar.html" },
 					{ text: "Commands", link: "/config/commands.html" },
 					{ text: "Compression", link: "/config/compression.html" },
+					{ text: "Connection", link: "/config/connection.html" },
+					{ text: "Fly", link: "/config/fly.html" },
 					{ text: "Proxy Integration", link: "/config/proxy-integration.html" },
 					{ text: "Schematic Loading", link: "/config/schematic-loading.html" },
 					{ text: "Server List", link: "/config/server-list.html" },
@@ -63,6 +66,14 @@ export default defineConfig({
 				items: [
 					{ text: "Convert Schematics", link: "/tutorials/schematic-conversion.html" },
 					{ text: "Fallback Server", link: "/tutorials/fallback-server.html" },
+					{ text: "Authentication", link: "/tutorials/authentication.html" },
+				],
+			},
+			{
+				text: "Developer",
+				items: [
+					{ text: "Customizing Server Brand", link: "/developer/customizing-server-brand.html" },
+					{ text: "Building Java Wrapper", link: "/developer/building-java-wrapper.html" },
 				],
 			},
 		],

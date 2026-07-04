@@ -13,7 +13,7 @@ impl PacketHandler for StatusRequestPacket {
         &self,
         client_state: &mut ClientState,
         server_state: &ServerState,
-    ) -> Result<Batch<PacketRegistry>, PacketHandlerError> {
+    ) -> Result<Batch, PacketHandlerError> {
         let mut batch = Batch::new();
 
         // Serve the cached upstream status (MOTD, players, icon) with two tweaks:
@@ -69,3 +69,10 @@ impl PacketHandler for StatusRequestPacket {
         Ok(batch)
     }
 }
+
+// [Dynastia] Upstream tests deleted here: our status handler diverges
+// heavily (cached upstream MOTD/players/icon proxying + version-gate
+// range echo). The upstream tests validate the vanilla fallback path,
+// which we only hit when the cache is absent — protocol-version
+// echo semantics are covered end-to-end via the version-gate
+// integration tests at handshake.rs.

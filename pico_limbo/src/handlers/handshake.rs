@@ -5,7 +5,6 @@ use crate::server::batch::Batch;
 use crate::server::client_state::ClientState;
 use crate::server::game_profile::GameProfile;
 use crate::server::packet_handler::{PacketHandler, PacketHandlerError};
-use crate::server::packet_registry::PacketRegistry;
 use crate::server_state::ServerState;
 use minecraft_packets::handshaking::handshake_packet::HandshakePacket;
 use minecraft_protocol::prelude::{ProtocolVersion, State};
@@ -16,8 +15,8 @@ impl PacketHandler for HandshakePacket {
         &self,
         client_state: &mut ClientState,
         server_state: &ServerState,
-    ) -> Result<Batch<PacketRegistry>, PacketHandlerError> {
-        let batch = Batch::new();
+    ) -> Result<Batch, PacketHandlerError> {
+        let mut batch = Batch::new();
         client_state
             .set_protocol_version(self.get_protocol(server_state.allow_unsupported_versions()));
 
@@ -29,7 +28,7 @@ impl PacketHandler for HandshakePacket {
                 )))
             },
             |next_state| {
-                client_state.set_state(next_state);
+                batch.queue_both_state_change(next_state);
 
                 match next_state {
                     State::Status => {
@@ -53,6 +52,9 @@ impl PacketHandler for HandshakePacket {
                     }
                     State::Transfer => {
                         if server_state.accept_transfers() {
+                            // [Dynastia] Version gate: kick if outside accepted range.
+                            // Same check as the Login path above — Transfer bypasses
+                            // the normal Login flow so we must repeat it here.
                             let client_proto = client_state.protocol_version().version_number();
                             if !server_state.vg_in_range(client_proto) {
                                 let msg = server_state.vg_kick_message()
@@ -60,7 +62,7 @@ impl PacketHandler for HandshakePacket {
                                 client_state.kick(&msg);
                                 return Ok(batch);
                             }
-                            client_state.set_state(State::Login);
+                            batch.queue_both_state_change(State::Login);
                             begin_login(client_state, server_state, &self.hostname)?;
                             Ok(batch)
                         } else {
@@ -159,8 +161,8 @@ mod tests {
         server_state_builder.build().unwrap()
     }
 
-    #[test]
-    fn test_handshake_handler_should_update_client_state_to_login() {
+    #[tokio::test]
+    async fn test_handshake_handler_should_update_client_state_to_login() {
         // Given
         let mut client_state = ClientState::default();
         let handshake_packet = HandshakePacket {
@@ -171,16 +173,18 @@ mod tests {
         };
 
         // When
-        handshake_packet
+        let mut batch = handshake_packet
             .handle(&mut client_state, &server_state())
-            .unwrap();
+            .unwrap()
+            .into_stream();
 
         // Then
-        assert_eq!(client_state.state(), State::Login);
+        batch.assert_client_state(State::Login).await;
+        batch.assert_server_state(State::Login).await;
     }
 
-    #[test]
-    fn test_handshake_handler_should_update_client_state_to_status() {
+    #[tokio::test]
+    async fn test_handshake_handler_should_update_client_state_to_status() {
         // Given
         let mut client_state = ClientState::default();
         let handshake_packet = HandshakePacket {
@@ -191,12 +195,14 @@ mod tests {
         };
 
         // When
-        handshake_packet
+        let mut batch = handshake_packet
             .handle(&mut client_state, &server_state())
-            .unwrap();
+            .unwrap()
+            .into_stream();
 
         // Then
-        assert_eq!(client_state.state(), State::Status);
+        batch.assert_client_state(State::Status).await;
+        batch.assert_server_state(State::Status).await;
     }
 
     #[test]
@@ -240,8 +246,8 @@ mod tests {
         assert_eq!(client_state.protocol_version(), ProtocolVersion::V1_15_2);
     }
 
-    #[test]
-    fn test_handshake_handler_should_change_state_when_bungee_cord_handshake_is_valid() {
+    #[tokio::test]
+    async fn test_handshake_handler_should_change_state_when_bungee_cord_handshake_is_valid() {
         // Given
         let mut client_state = ClientState::default();
         let handshake_packet = HandshakePacket {
@@ -252,12 +258,14 @@ mod tests {
         };
 
         // When
-        handshake_packet
+        let mut batch = handshake_packet
             .handle(&mut client_state, &bungee_cord())
-            .unwrap();
+            .unwrap()
+            .into_stream();
 
         // Then
-        assert_eq!(client_state.state(), State::Login);
+        batch.assert_client_state(State::Login).await;
+        batch.assert_server_state(State::Login).await;
     }
 
     #[test]
@@ -285,8 +293,8 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn test_handshake_handler_update_state_to_status_when_bungee_cord_is_enabled() {
+    #[tokio::test]
+    async fn test_handshake_handler_update_state_to_status_when_bungee_cord_is_enabled() {
         // Given
         let mut client_state = ClientState::default();
         let handshake_packet = HandshakePacket {
@@ -297,11 +305,13 @@ mod tests {
         };
 
         // When
-        handshake_packet
+        let mut batch = handshake_packet
             .handle(&mut client_state, &bungee_cord())
-            .unwrap();
+            .unwrap()
+            .into_stream();
 
         // Then
-        assert_eq!(client_state.state(), State::Status);
+        batch.assert_client_state(State::Status).await;
+        batch.assert_server_state(State::Status).await;
     }
 }

@@ -1,8 +1,10 @@
+use crate::server::batch::{Batch, BatchItem};
 use crate::server::client_data::ClientData;
 use crate::server::packet_handler::{PacketHandler, PacketHandlerError};
 use crate::server::packet_registry::{
     PacketRegistry, PacketRegistryDecodeError, PacketRegistryEncodeError,
 };
+use crate::server::server_address::ServerAddress;
 use crate::server::shutdown_signal::shutdown_signal;
 use crate::server_state::ServerState;
 use futures::StreamExt;
@@ -19,23 +21,24 @@ use std::sync::Arc;
 use thiserror::Error;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::RwLock;
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, trace, warn};
 
 pub struct Server {
     state: Arc<RwLock<ServerState>>,
-    listen_address: String,
+    listen_address: ServerAddress,
 }
 
 impl Server {
-    pub fn new(listen_address: &impl ToString, state: ServerState) -> Self {
+    pub fn new(listen_address: &ServerAddress, state: ServerState) -> Self {
         Self {
             state: Arc::new(RwLock::new(state)),
-            listen_address: listen_address.to_string(),
+            listen_address: listen_address.clone(),
         }
     }
 
-    pub async fn run(self) {
-        let listener = match TcpListener::bind(&self.listen_address).await {
+    pub async fn run(self, cancellation_token: Option<&CancellationToken>) {
+        let listener = match TcpListener::bind(&self.listen_address.tuple()).await {
             Ok(sock) => sock,
             Err(err) => {
                 error!("Failed to bind to {}: {}", self.listen_address, err);
@@ -44,10 +47,14 @@ impl Server {
         };
 
         info!("Listening on: {}", self.listen_address);
-        self.accept(&listener).await;
+        self.accept(&listener, cancellation_token).await;
     }
 
-    pub async fn accept(self, listener: &TcpListener) {
+    pub async fn accept(
+        self,
+        listener: &TcpListener,
+        cancellation_token: Option<&CancellationToken>,
+    ) {
         // [Dynastia] Start upstream status poller if configured
         {
             let upstream_addr = self.state.read().await.upstream_status_addr().to_string();
@@ -107,7 +114,7 @@ impl Server {
                     }
                 },
 
-                 () = shutdown_signal() => {
+                 () = shutdown_signal(cancellation_token) => {
                     info!("Shutdown signal received, shutting down gracefully.");
                     break;
                 }
@@ -188,29 +195,46 @@ async fn process_packet(
     raw_packet: RawPacket,
     was_in_play_state: &mut bool,
 ) -> Result<(), PacketProcessingError> {
-    let mut client_state = client_data.client().await;
-    let protocol_version = client_state.protocol_version();
-    let state = client_state.state();
+    let (protocol_version, state) = {
+        let client_state = client_data.client().await;
+        (
+            client_state.protocol_version(),
+            client_state.serverbound_state(),
+        )
+    };
     let decoded_packet = PacketRegistry::decode_packet(protocol_version, state, raw_packet)?;
+    trace!(
+        packet_name = decoded_packet.packet_name(),
+        "Packet received"
+    );
 
-    let batch = {
+    let batch: Batch = {
         let server_state_guard = server_state.read().await;
+        let mut client_state = client_data.client().await;
         decoded_packet.handle(&mut client_state, &server_state_guard)?
     };
 
-    let protocol_version = client_state.protocol_version();
-    let state = client_state.state();
+    let (protocol_version, state) = {
+        let client_state = client_data.client().await;
+        (
+            client_state.protocol_version(),
+            client_state.serverbound_state(),
+        )
+    };
 
     if !*was_in_play_state && state == State::Play {
         *was_in_play_state = true;
         server_state.write().await.increment();
-        let username = client_state.get_username();
+        let username = {
+            let client_state = client_data.client().await;
+            client_state.get_username()
+        };
         debug!(
             "{} joined using version {}",
             username,
             protocol_version.humanize()
         );
-        info!("{} joined the game", username,);
+        info!("{} joined the game", username);
 
         // --- Dynastia XDP patch: auto-transfer to backend with upstream health check ---
         // If the backend is reachable, transfer immediately (happy path).
@@ -232,7 +256,10 @@ async fn process_packet(
         if transfer_port > 0 {
             // Version gate is enforced in the handshake handler (before login).
             // By this point, the client already passed the version check.
-            drop(client_state);
+            // [Dynastia/upstream sync] The upstream refactor scoped
+            // client_state inside `let (protocol_version, state) = {…}`
+            // so no explicit drop() is needed anymore — the guard is
+            // released at the block's end (~line 223).
             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
             let pv = client_data.protocol_version().await;
             let ipv4_opt: Option<std::net::Ipv4Addr> = match addr.ip() {
@@ -378,35 +405,52 @@ async fn process_packet(
             // spawns in the limbo world (Login Play + Configuration packets).
             // The deferred task will send the Transfer packet later, once the
             // upstream poller flips `upstream_alive` back to true.
-            // Re-acquire client_state: it was dropped before the 500ms sleep,
-            // but the `should_kick` check below still needs it.
-            client_state = client_data.client().await;
+            // [Dynastia/upstream sync] No need to re-acquire client_state
+            // here — the `should_kick` check below has its own local
+            // scope that re-locks client_data.client() as needed.
         }
     }
 
     let mut stream = batch.into_stream();
     while let Some(pending_packet) = stream.next().await {
-        let enable_compression = matches!(pending_packet, PacketRegistry::SetCompression(..));
-        let raw_packet = pending_packet.encode_packet(protocol_version)?;
-        client_data.write_packet(raw_packet).await?;
-        if enable_compression
-            && let Some(compression_settings) = server_state.read().await.compression_settings()
-        {
-            let mut packet_stream = client_data.stream().await;
-            packet_stream
-                .set_compression(compression_settings.threshold, compression_settings.level);
+        match pending_packet {
+            BatchItem::Packet(packet) => {
+                trace!(packet_name = packet.packet_name(), "Sending packet");
+                let raw_packet = packet.encode_packet(protocol_version)?;
+                client_data.write_packet(raw_packet).await?;
+            }
+            BatchItem::StateChange(direction, new_state) => {
+                trace!(?direction, ?new_state, "Changing state");
+                let mut client_state = client_data.client().await;
+                client_state.set_state(direction, new_state);
+            }
+            BatchItem::EnableCompression => {
+                if let Some(compression_settings) = server_state.read().await.compression_settings()
+                {
+                    let mut packet_stream = client_data.stream().await;
+                    packet_stream.set_compression(
+                        compression_settings.threshold,
+                        compression_settings.level,
+                    );
+                } else {
+                    warn!("compression enabled but no settings were found");
+                }
+            }
         }
     }
 
-    if let Some(reason) = client_state.should_kick() {
-        drop(client_state);
+    let should_kick = {
+        let client_state = client_data.client().await;
+        client_state.should_kick()
+    };
+
+    if let Some(reason) = should_kick {
         kick_client(client_data, reason.clone())
             .await
             .map_err(|_| PacketProcessingError::Disconnected)?;
         return Err(PacketProcessingError::Disconnected);
     }
 
-    drop(client_state);
     client_data.enable_keep_alive_if_needed().await;
 
     Ok(())
@@ -435,7 +479,11 @@ async fn handle_client(
     addr: SocketAddr,
     server_state: Arc<RwLock<ServerState>>,
 ) {
-    let client_data = ClientData::new(socket);
+    // [Dynastia] keep_alive_interval was added upstream and moved into
+    // ClientData::new; keep the addr parameter which our transfer logic
+    // (BPF game_validated write, deferred transfer logging) requires.
+    let keep_alive_interval = server_state.read().await.keep_alive_interval();
+    let client_data = ClientData::new(socket, keep_alive_interval);
     let mut was_in_play_state = false;
 
     loop {
@@ -471,7 +519,7 @@ async fn kick_client(
 ) -> Result<(), PacketProcessingError> {
     let (protocol_version, state) = {
         let state = client_data.client().await;
-        (state.protocol_version(), state.state())
+        (state.protocol_version(), state.clientbound_state())
     };
     let packet = match state {
         State::Login => {
@@ -502,11 +550,21 @@ async fn kick_client(
 async fn send_keep_alive(client_data: &ClientData) -> Result<(), PacketProcessingError> {
     let (protocol_version, state) = {
         let client = client_data.client().await;
-        (client.protocol_version(), client.state())
+        (client.protocol_version(), client.clientbound_state())
     };
 
-    if state == State::Play {
-        let packet = PacketRegistry::ClientBoundKeepAlive(ClientBoundKeepAlivePacket::random()?);
+    let packet = match state {
+        State::Configuration => Some(PacketRegistry::ConfigurationClientBoundKeepAlive(
+            ClientBoundKeepAlivePacket::random()?,
+        )),
+        State::Play => Some(PacketRegistry::ClientBoundKeepAlive(
+            ClientBoundKeepAlivePacket::random()?,
+        )),
+        _ => None,
+    };
+
+    if let Some(packet) = packet {
+        trace!(?state, "sending keep alive");
         let raw_packet = packet.encode_packet(protocol_version)?;
         client_data.write_packet(raw_packet).await?;
     }

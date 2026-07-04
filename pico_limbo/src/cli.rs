@@ -3,6 +3,7 @@ use std::path::PathBuf;
 
 #[derive(Parser, Clone)]
 #[command(
+    version,
     about = "A lightweight Minecraft server written in Rust supporting all Minecraft versions"
 )]
 pub struct Cli {
@@ -24,4 +25,22 @@ pub struct Cli {
         help = "Configuration file path"
     )]
     pub config_path: PathBuf,
+
+    /// Port to listen on. Defaults back to the port defined in the configuration file if not specified
+    #[arg(
+        short = 'p',
+        long = "port",
+        value_name = "PORT",
+        help = "Port to listen on"
+    )]
+    pub port: Option<u16>,
+
+    /// If set to true, the banner will not be displayed
+    #[arg(
+        long = "skip-banner",
+        value_name = "SKIP_BANNER",
+        help = "Whether to skip the banner or not",
+        default_value_t = false
+    )]
+    pub skip_banner: bool,
 }

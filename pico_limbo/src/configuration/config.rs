@@ -1,7 +1,9 @@
 use crate::configuration::boss_bar::BossBarConfig;
 use crate::configuration::commands::CommandsConfig;
 use crate::configuration::compression::CompressionConfig;
+use crate::configuration::connection_config::ConnectionConfig;
 use crate::configuration::env_placeholders::{EnvPlaceholderError, expand_env_placeholders};
+use crate::configuration::fly_config::FlyConfig;
 use crate::configuration::forwarding::ForwardingConfig;
 use crate::configuration::game_mode_config::GameModeConfig;
 use crate::configuration::server_list::ServerListConfig;
@@ -111,6 +113,8 @@ pub struct Config {
 
     pub server_list: ServerListConfig,
 
+    pub connection: ConnectionConfig,
+
     /// Message sent to the player after spawning in the world.
     pub welcome_message: String,
 
@@ -131,9 +135,7 @@ pub struct Config {
 
     pub reduced_debug_info: bool,
 
-    pub allow_unsupported_versions: bool,
-
-    pub allow_flight: bool,
+    pub fly: FlyConfig,
 
     pub accept_transfers: bool,
 
@@ -153,6 +155,7 @@ impl Default for Config {
         Self {
             bind: "0.0.0.0:25565".into(),
             server_list: ServerListConfig::default(),
+            connection: ConnectionConfig::default(),
             welcome_message: "Welcome to PicoLimbo!".into(),
             action_bar: "Welcome to PicoLimbo!".into(),
             forwarding: ForwardingConfig::default(),
@@ -165,8 +168,7 @@ impl Default for Config {
             boss_bar: BossBarConfig::default(),
             compression: CompressionConfig::default(),
             title: TitleConfig::default(),
-            allow_unsupported_versions: false,
-            allow_flight: false,
+            fly: FlyConfig::default(),
             accept_transfers: false,
             commands: CommandsConfig::default(),
             version_gate: VersionGateConfig::default(),

@@ -81,8 +81,8 @@ impl Schematic {
 
         for (block_name, schematic_palette_id) in palette_nbt {
             if let Ok(state_data) = block_state_lookup.parse_state_string(block_name)
-                && let Some(entry) =
-                    palette.get_mut(usize::try_from(*schematic_palette_id).unwrap_or_default())
+                && let Ok(palette_id) = usize::try_from(*schematic_palette_id)
+                && let Some(entry) = palette.get_mut(palette_id)
             {
                 *entry = *state_data;
             } else {
@@ -93,7 +93,8 @@ impl Schematic {
             }
         }
 
-        Ok((palette, 0))
+        let air_palette_index = palette_nbt.get(AIR_IDENTIFIER).copied().unwrap_or(0);
+        Ok((palette, air_palette_index))
     }
 
     /// Converts a 3D coordinate within the schematic to a 1D index for the `block_data` vector.

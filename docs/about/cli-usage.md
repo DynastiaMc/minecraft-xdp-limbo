@@ -32,6 +32,14 @@ pico_limbo -v
 pico_limbo -vv
 ```
 
+### Port override
+
+Override the port configured in the configuration file:
+
+```bash
+pico_limbo --port 30066
+```
+
 ## Advanced Options
 
 ### Version Information
@@ -40,6 +48,15 @@ Display version information:
 
 ```bash
 pico_limbo --version
+```
+
+### Hide Banner
+
+When PicoLimbo starts, a banner is displayed to inform users of the server version.
+You can hide this banner by passing the `--skip-banner` flag:
+
+```bash
+pico_limbo --skip-banner
 ```
 
 ### Help

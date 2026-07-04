@@ -1,3 +1,4 @@
+use crate::banner;
 use crate::configuration::TaggedForwarding;
 use crate::configuration::boss_bar::BossBarConfig;
 use crate::configuration::config::{Config, ConfigError, load_or_create};
@@ -5,25 +6,38 @@ use crate::configuration::tab_list::TabListMode;
 use crate::configuration::title::TitleConfig;
 use crate::configuration::world_config::boundaries::BoundariesConfig;
 use crate::server::network::Server;
+use crate::server::server_address::ServerAddress;
 use crate::server_state::{ServerState, ServerStateBuilderError};
 use std::path::PathBuf;
 use std::process::ExitCode;
+use tokio_util::sync::CancellationToken;
 use tracing::{Level, debug, error};
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 
-pub async fn start_server(config_path: PathBuf, logging_level: u8) -> ExitCode {
-    enable_logging(logging_level);
-    let Some(cfg) = load_configuration(&config_path) else {
+pub async fn start_server(
+    cli: &crate::cli::Cli,
+    cancellation_token: Option<&CancellationToken>,
+) -> ExitCode {
+    enable_logging(cli.verbose);
+    let Some(cfg) = load_configuration(&cli.config_path) else {
         return ExitCode::FAILURE;
     };
 
-    let bind = cfg.bind.clone();
+    let mut bind = ServerAddress::parse(&cfg.bind).unwrap_or_default();
+    if let Some(port) = cli.port {
+        bind.set_port(port);
+    }
 
     match build_state(cfg) {
         Ok(server_state) => {
-            Server::new(&bind, server_state).run().await;
+            if !cli.skip_banner {
+                banner::display_banner();
+            }
+            Server::new(&bind, server_state)
+                .run(cancellation_token)
+                .await;
             ExitCode::SUCCESS
         }
         Err(err) => {
@@ -121,12 +135,13 @@ fn build_state(cfg: Config) -> Result<ServerState, ServerStateBuilderError> {
         .view_distance(cfg.world.experimental.view_distance)
         .schematic(cfg.world.experimental.schematic_file)
         .enable_compression(cfg.compression.threshold, cfg.compression.level)?
+        .keep_alive_interval_secs(cfg.connection.keep_alive_interval_seconds)
         .fetch_player_skins(cfg.fetch_player_skins)
         .reduced_debug_info(cfg.reduced_debug_info)
         .set_player_listed(cfg.tab_list.player_listed)
         .set_reply_to_status(cfg.server_list.reply_to_status)
-        .set_allow_unsupported_versions(cfg.allow_unsupported_versions)
-        .set_allow_flight(cfg.allow_flight)
+        .set_allow_unsupported_versions(cfg.connection.allow_unsupported_versions)
+        .set_fly(&cfg.fly)
         .set_accept_transfers(cfg.accept_transfers)
         .set_upstream(&cfg.upstream)
         .set_version_gate(&cfg.version_gate)

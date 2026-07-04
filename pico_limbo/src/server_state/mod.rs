@@ -1,5 +1,6 @@
 use crate::configuration::boss_bar::EnabledBossBarConfig;
 use crate::configuration::commands::CommandsConfig;
+use crate::configuration::fly_config::FlyConfig;
 use crate::server::game_mode::GameMode;
 use base64::engine::general_purpose;
 use base64::{Engine, alphabet, engine};
@@ -78,6 +79,22 @@ pub struct Title {
     pub fade_out: i32,
 }
 
+pub struct Fly {
+    pub allow_flight: bool,
+    pub flying: bool,
+    pub flying_speed: f32,
+}
+
+impl Default for Fly {
+    fn default() -> Self {
+        Self {
+            allow_flight: false,
+            flying: false,
+            flying_speed: 0.05,
+        }
+    }
+}
+
 #[derive(Default)]
 #[allow(clippy::struct_excessive_bools)]
 pub struct ServerState {
@@ -109,7 +126,7 @@ pub struct ServerState {
     reply_to_status: bool,
     accept_transfers: bool,
     allow_unsupported_versions: bool,
-    allow_flight: bool,
+    fly: Fly,
     server_commands: ServerCommands,
     upstream_status_addr: String,
     upstream_poll_secs: u64,
@@ -136,6 +153,9 @@ pub struct ServerState {
     /// `Option` wrapper because `Instant` has no `Default` impl — lazily
     /// initialized to `now()` on first claim.
     transfer_slot_cursor: Arc<std::sync::Mutex<Option<std::time::Instant>>>,
+    /// [upstream] Keep-alive interval for 1.8+ clients in CONFIGURATION + PLAY.
+    /// Set via `keep_alive_interval_seconds` in gate.toml `[connection]`.
+    keep_alive_interval_secs: u64,
 }
 
 impl ServerState {
@@ -219,6 +239,13 @@ impl ServerState {
         self.view_distance
     }
 
+    /// Keep-alive interval used for clients on 1.8+ (CONFIGURATION + PLAY).
+    /// Clients <= 1.7.6 use a hard-coded 2-second period required by the
+    /// legacy protocol, independent of this value.
+    pub const fn keep_alive_interval(&self) -> Duration {
+        Duration::from_secs(self.keep_alive_interval_secs)
+    }
+
     pub fn world(&self) -> Option<Arc<World>> {
         self.world.clone()
     }
@@ -295,6 +322,15 @@ impl ServerState {
     }
 
     pub fn vg_in_range(&self, proto: i32) -> bool {
+        // Version gate is opt-in: when both bounds are 0 (default when
+        // [version_gate] is absent from gate.toml), skip the check
+        // entirely and accept any protocol. Otherwise callers see the
+        // gate refuse every version because effective_max clamps to 0.
+        // This also lets the upstream tests pass without stubbing the
+        // gate config in every server_state() helper.
+        if self.vg_min_protocol == 0 && self.vg_max_protocol == 0 {
+            return true;
+        }
         proto >= self.vg_effective_min() && proto <= self.vg_effective_max()
     }
 
@@ -325,8 +361,8 @@ impl ServerState {
         self.allow_unsupported_versions
     }
 
-    pub const fn allow_flight(&self) -> bool {
-        self.allow_flight
+    pub const fn fly(&self) -> &Fly {
+        &self.fly
     }
 
     pub const fn accept_transfers(&self) -> bool {
@@ -409,7 +445,7 @@ pub struct ServerStateBuilder {
     is_player_listed: bool,
     reply_to_status: bool,
     allow_unsupported_versions: bool,
-    allow_flight: bool,
+    fly: Fly,
     accept_transfers: bool,
     server_commands: ServerCommands,
     upstream_status_addr: String,
@@ -421,6 +457,7 @@ pub struct ServerStateBuilder {
     vg_min_protocol: i32,
     vg_max_protocol: i32,
     vg_kick_message: String,
+    keep_alive_interval_secs: Option<u64>,
 }
 
 #[derive(Debug, Error)]
@@ -544,8 +581,12 @@ impl ServerStateBuilder {
         self
     }
 
-    pub const fn set_allow_flight(&mut self, allow_flight: bool) -> &mut Self {
-        self.allow_flight = allow_flight;
+    pub const fn set_fly(&mut self, fly: &FlyConfig) -> &mut Self {
+        self.fly = Fly {
+            allow_flight: fly.allow_flight,
+            flying_speed: fly.flying_speed,
+            flying: fly.flying,
+        };
         self
     }
 
@@ -571,6 +612,13 @@ impl ServerStateBuilder {
 
     pub fn view_distance(&mut self, view_distance: i32) -> &mut Self {
         self.view_distance = view_distance.max(0);
+        self
+    }
+
+    /// Set the keep-alive interval, in seconds, for clients on 1.8+.
+    /// Defaults to 15 (vanilla) when this method is not called.
+    pub const fn keep_alive_interval_secs(&mut self, secs: u64) -> &mut Self {
+        self.keep_alive_interval_secs = Some(secs);
         self
     }
 
@@ -751,7 +799,7 @@ impl ServerStateBuilder {
             is_player_listed: self.is_player_listed,
             reply_to_status: self.reply_to_status,
             allow_unsupported_versions: self.allow_unsupported_versions,
-            allow_flight: self.allow_flight,
+            fly: self.fly,
             accept_transfers: self.accept_transfers,
             server_commands: self.server_commands,
             upstream_status_addr: self.upstream_status_addr,
@@ -766,6 +814,7 @@ impl ServerStateBuilder {
             cached_upstream_status: Arc::new(std::sync::RwLock::new(None)),
             upstream_alive: Arc::new(AtomicBool::new(false)),
             transfer_slot_cursor: Arc::new(std::sync::Mutex::new(None)),
+            keep_alive_interval_secs: self.keep_alive_interval_secs.unwrap_or(15),
         })
     }
 }

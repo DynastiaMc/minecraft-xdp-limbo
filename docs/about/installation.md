@@ -11,7 +11,7 @@ You can find the egg files in the GitHub repository:
 The eggs support additional installation configuration through the following environment variable:
 
 - **VERSION**  
-  Specifies the Git tag of the release to install (e.g., `v1.12.0+mc26.1`).
+  Specifies the Git tag of the release to install (e.g., `v1.13.1+mc26.2`).
     - Default: `latest`
     - When set to `latest` (or left unset), the installer selects the newest stable release.
 
@@ -61,6 +61,70 @@ To use this configuration:
 2. Create a `docker-compose.yml` file with the content above
 3. Create a `server.toml` file with your configuration
 4. Run `docker compose up -d` to start the server
+
+## Using NixOS
+
+The flake provides a package, nixpkgs overlay, and NixOS module. The module runs PicoLimbo as a systemd service and exposes all server settings through `services.picolimbo.settings`, which is serialised to `/etc/picolimbo/server.toml` at activation time.
+
+To use it:
+
+1. Add PicoLimbo as a flake input
+
+```nix
+{
+  inputs = {
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    picolimbo.url = "github:Quozul/PicoLimbo";
+  };
+}
+```
+
+2. Import the NixOS module
+
+```nix
+imports = [
+  inputs.picolimbo.nixosModules.default
+];
+```
+
+3. Enable the service
+
+```nix
+{
+  services.picolimbo = {
+    enable = true;
+
+    settings = {
+      bind = "0.0.0.0:25565";
+
+      welcome_message = "<red>You were spawned in Limbo.</red>";
+      server_list = {
+        max_players = 50;
+      };
+    };
+  };
+}
+```
+
+It is recommended to store secrets (e.g. for forwarding) using `sops-nix` or with systemd credentials.
+
+```nix
+{
+  services.picolimbo.settings = {
+    bind = "0.0.0.0:25565";
+
+    forwarding = {
+      method = "MODERN";
+      secret = "\${VELOCITY_SECRET}";
+    };
+  };
+
+  systemd.services.picolimbo = {
+    serviceConfig.LoadCredential = "velocity-secret:/path/to/velocity-secret";
+    environment.VELOCITY_SECRET = "%d/velocity-secret";
+  };
+}
+```
 
 ## Binary / Standalone
 
