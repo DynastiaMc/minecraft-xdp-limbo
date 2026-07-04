@@ -274,8 +274,19 @@ async fn process_packet(
                         transfer_start.elapsed().as_millis()
                     );
                 }
-                // Return early — skip the rest of the batch processing for this packet
-                return Ok(());
+                // [Dynastia] After sending the Transfer packet the vanilla client
+                // opens a NEW TCP connection to the target and abandons this one
+                // without a clean FIN. Returning Ok would loop back into read()
+                // waiting on a packet that never comes; the socket then leaks
+                // until Linux TCP keepalive (2h default) or ss -K reaps it.
+                // Under sustained transfer traffic, PicoLimbo accumulates
+                // thousands of stale fds (observed 11k+ on pg3 2026-07-04),
+                // slows accept(), and triggers TcpExtListenOverflows on new
+                // players.
+                // Returning Disconnected here breaks the handle_client loop
+                // which then calls client_data.shutdown() → clean TCP close,
+                // fd freed immediately.
+                return Err(PacketProcessingError::Disconnected);
             }
 
             // Backend down — hold on limbo + spawn deferred transfer task.
