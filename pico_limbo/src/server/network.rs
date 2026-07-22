@@ -18,6 +18,7 @@ use net::raw_packet::RawPacket;
 use std::net::SocketAddr;
 use std::num::TryFromIntError;
 use std::sync::Arc;
+use std::time::Duration;
 use thiserror::Error;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::RwLock;
@@ -456,6 +457,28 @@ async fn process_packet(
     Ok(())
 }
 
+/// [Dynastia] Idle timeout for client sockets that go silent without a FIN.
+///
+/// Upstream's read loop is a select! over read_packet() and keep_alive_tick()
+/// with no deadline. Keep-alive is only armed once the client reaches Play
+/// (`enable_keep_alive_if_needed`), so any connection that stalls *before*
+/// that — status ping, aborted handshake, login that never completes — parks
+/// in read_packet() forever. The fd is never released and the kernel socket
+/// stays ESTABLISHED with no timer, i.e. immortal.
+///
+/// That is invisible upstream (clients disconnect cleanly and hold a full
+/// IPv4 with 64k ephemeral ports) but fatal behind CGNAT/MAP-T, where a
+/// subscriber owns a ~2k port slice: the leak pins their whole range and they
+/// can no longer open *any* connection. Observed on pg3 2026-07-22: 3369 stale
+/// ESTAB sockets on :25565, 1369 of them from a single SFR MAP-T subscriber
+/// whose allocation is ports 3040-4991 — ~70% of her range consumed.
+///
+/// 30s is twice the default keep_alive_interval_seconds (15). Play-state
+/// clients — including players held in the waiting room while the backend is
+/// down — resolve the select! via the keep-alive branch every 15s and never
+/// reach this deadline. Only genuinely silent sockets do.
+const IDLE_TIMEOUT: Duration = Duration::from_secs(30);
+
 async fn read(
     addr: SocketAddr,
     client_data: &ClientData,
@@ -463,8 +486,13 @@ async fn read(
     was_in_play_state: &mut bool,
 ) -> Result<(), PacketProcessingError> {
     tokio::select! {
-        result = client_data.read_packet() => {
-            let raw_packet = result?;
+        result = tokio::time::timeout(IDLE_TIMEOUT, client_data.read_packet()) => {
+            // [Dynastia] Outer Err = the idle timeout elapsed; treat it as a
+            // disconnect so handle_client breaks and calls shutdown().
+            let raw_packet = match result {
+                Err(_elapsed) => return Err(PacketProcessingError::Disconnected),
+                Ok(inner) => inner?,
+            };
             process_packet(addr, client_data, server_state, raw_packet, was_in_play_state).await?;
         }
         () = client_data.keep_alive_tick() => {
