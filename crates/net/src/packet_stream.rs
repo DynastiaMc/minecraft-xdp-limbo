@@ -9,6 +9,9 @@ use std::num::TryFromIntError;
 use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
+/// [Dynastia] First byte of a pre-1.7 Legacy Server List Ping.
+const LEGACY_PING_ID: u8 = 0xFE;
+
 #[derive(Clone)]
 struct CompressionSettings {
     threshold: usize,
@@ -21,6 +24,11 @@ where
 {
     stream: Stream,
     compression_settings: Option<CompressionSettings>,
+    /// [Dynastia] True until the first packet of the connection has been read.
+    /// Gates the legacy-ping sniff so 0xFE is only special-cased where it can
+    /// actually mean "legacy ping" — as a normal length prefix mid-stream it
+    /// is a perfectly valid 254-byte packet.
+    awaiting_first_packet: bool,
 }
 
 impl<Stream> PacketStream<Stream>
@@ -32,6 +40,7 @@ where
         Self {
             stream,
             compression_settings: None,
+            awaiting_first_packet: true,
         }
     }
 
@@ -49,10 +58,16 @@ where
 
     /// Reads a single packet from the stream, handling decompression if enabled.
     pub async fn read_packet(&mut self) -> Result<RawPacket, PacketStreamError> {
-        match self.compression_settings {
+        let result = match self.compression_settings {
             None => self.read_uncompressed_packet().await,
             Some(_) => self.read_compressed_packet_format().await,
+        };
+        // [Dynastia] Once anything has been framed successfully the connection
+        // is speaking the modern protocol; stop sniffing for 0xFE.
+        if result.is_ok() {
+            self.awaiting_first_packet = false;
         }
+        result
     }
 
     /// Writes a single packet to the stream, handling compression if enabled.
@@ -181,6 +196,19 @@ where
         for _ in 0..5 {
             let mut byte = [0u8; 1];
             self.stream.read_exact(&mut byte).await?;
+
+            // [Dynastia] Legacy Server List Ping (pre-1.7) opens with 0xFE.
+            // Read as a VarInt length, 0xFE 0x01 decodes to 254, so we would
+            // block waiting for 254 bytes that never arrive — the connection
+            // hangs until the idle timeout. Vanilla clients fall back to this
+            // protocol whenever a modern ping fails, so the hang turns a
+            // transient failure into a server that "spins forever" in the
+            // list. Detect it on the first byte of the first packet and let
+            // the caller answer properly.
+            if self.awaiting_first_packet && var_int_buf.is_empty() && byte[0] == LEGACY_PING_ID {
+                return Err(PacketStreamError::LegacyPing);
+            }
+
             var_int_buf.push(byte[0]);
 
             // Try to parse, but continue if more data is needed.
@@ -216,6 +244,10 @@ pub enum PacketStreamError {
     DecompressionSizeMismatch { expected: usize, actual: usize },
     #[error(transparent)]
     TryFromInt(#[from] TryFromIntError),
+    /// [Dynastia] Peer opened with a pre-1.7 Legacy Server List Ping (0xFE).
+    /// Not an error condition — the caller answers it and closes.
+    #[error("legacy server list ping")]
+    LegacyPing,
 }
 
 fn compress_data(data: &[u8], compression_level: Compression) -> io::Result<Vec<u8>> {

@@ -18,6 +18,7 @@ use std::num::TryFromIntError;
 use std::sync::Arc;
 use std::time::Duration;
 use thiserror::Error;
+use tokio::io::AsyncWriteExt;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::RwLock;
 use tracing::{debug, error, info, trace, warn};
@@ -127,6 +128,10 @@ pub enum PacketProcessingError {
 
     #[error("{0}")]
     Custom(String),
+
+    /// [Dynastia] Peer opened with a pre-1.7 Legacy Server List Ping (0xFE).
+    #[error("legacy server list ping")]
+    LegacyPing,
 }
 
 impl From<PacketHandlerError> for PacketProcessingError {
@@ -177,6 +182,10 @@ impl From<PacketStreamError> for PacketProcessingError {
             {
                 Self::Disconnected
             }
+            // [Dynastia] Surface the legacy ping as its own variant so
+            // handle_client can answer it instead of treating it as a decode
+            // error and looping forever on a stream it will never parse.
+            PacketStreamError::LegacyPing => Self::LegacyPing,
             _ => Self::Custom(value.to_string()),
         }
     }
@@ -458,6 +467,113 @@ async fn read(
     Ok(())
 }
 
+/// [Dynastia] Flattens a chat component tree to plain text.
+///
+/// The proxied MOTD is a nested `{color, text, extra: [...]}` tree, so reading
+/// `/description/text` alone yields an empty string on anything but the
+/// simplest MOTD. Walks `text` then recurses through `extra`, dropping
+/// formatting — the legacy field is NUL-delimited and plain text is the safest
+/// thing to put in it.
+fn flatten_component(value: &serde_json::Value) -> String {
+    match value {
+        serde_json::Value::String(s) => s.clone(),
+        serde_json::Value::Array(items) => items.iter().map(flatten_component).collect(),
+        serde_json::Value::Object(map) => {
+            let mut out = map
+                .get("text")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            if let Some(extra) = map.get("extra") {
+                out.push_str(&flatten_component(extra));
+            }
+            out
+        }
+        _ => String::new(),
+    }
+}
+
+/// [Dynastia] Fallback MOTD when the upstream status has not been polled yet.
+///
+/// The limbo MOTD can itself be a serialised chat component, so flatten it if
+/// it parses as JSON rather than shipping raw `{"text":...}` to the client.
+fn legacy_motd_fallback(raw: &str) -> String {
+    serde_json::from_str::<serde_json::Value>(raw)
+        .map_or_else(|_| raw.to_string(), |v| flatten_component(&v))
+}
+
+/// [Dynastia] Answers a pre-1.7 Legacy Server List Ping.
+///
+/// Wire format is a 0xFF kick packet carrying a UTF-16BE string:
+///   §1 \0 <protocol> \0 <version> \0 <motd> \0 <online> \0 <max>
+/// Length is a big-endian u16 counting UTF-16 code units, not bytes.
+///
+/// Why this matters: vanilla clients fall back to this protocol whenever a
+/// modern ping fails. Without a handler the 0xFE decodes as a 254-byte VarInt
+/// length and the connection blocks waiting for bytes that never arrive, so a
+/// one-off modern failure becomes a server that spins forever in the list —
+/// and the client keeps preferring legacy for that entry. Answering it makes
+/// the entry resolve normally instead.
+async fn respond_legacy_ping(
+    client_data: &ClientData,
+    server_state: &Arc<RwLock<ServerState>>,
+) -> Result<(), PacketProcessingError> {
+    let (protocol, version, motd, online, max) = {
+        let state = server_state.read().await;
+        let version = state.backend_version_name();
+        let protocol = state.vg_effective_max();
+        // Reuse the proxied upstream status so the legacy line matches what
+        // modern clients see. Falls back to the limbo MOTD when the backend
+        // status has not been polled yet.
+        let (motd, online, max) = state.cached_upstream_status().map_or_else(
+            || (legacy_motd_fallback(&state.motd().to_legacy()), 0i64, 0i64),
+            |json| {
+                serde_json::from_str::<serde_json::Value>(&json).map_or_else(
+                    |_| (state.motd().to_legacy(), 0i64, 0i64),
+                    |v| {
+                        let motd = v
+                            .pointer("/description")
+                            .map(flatten_component)
+                            .unwrap_or_default();
+                        let online = v
+                            .pointer("/players/online")
+                            .and_then(serde_json::Value::as_i64)
+                            .unwrap_or(0);
+                        let max = v
+                            .pointer("/players/max")
+                            .and_then(serde_json::Value::as_i64)
+                            .unwrap_or(0);
+                        (motd, online, max)
+                    },
+                )
+            },
+        );
+        (protocol, version, motd, online, max)
+    };
+
+    // The legacy payload is NUL-separated, so strip any NUL and newline from
+    // the MOTD or the client mis-parses the remaining fields.
+    let motd = motd.replace(['\0', '\n'], " ");
+    let payload = format!("\u{00A7}1\0{protocol}\0{version}\0{motd}\0{online}\0{max}");
+
+    let utf16: Vec<u16> = payload.encode_utf16().collect();
+    let len = u16::try_from(utf16.len()).unwrap_or(u16::MAX);
+    let mut buf = Vec::with_capacity(3 + utf16.len() * 2);
+    buf.push(0xFF);
+    buf.extend_from_slice(&len.to_be_bytes());
+    for unit in utf16 {
+        buf.extend_from_slice(&unit.to_be_bytes());
+    }
+
+    client_data
+        .stream()
+        .await
+        .get_stream()
+        .write_all(&buf)
+        .await
+        .map_err(|e| PacketProcessingError::Custom(e.to_string()))
+}
+
 async fn handle_client(
     socket: TcpStream,
     addr: SocketAddr,
@@ -469,6 +585,14 @@ async fn handle_client(
     loop {
         match read(addr, &client_data, &server_state, &mut was_in_play_state).await {
             Ok(()) => {}
+            Err(PacketProcessingError::LegacyPing) => {
+                if let Err(e) = respond_legacy_ping(&client_data, &server_state).await {
+                    debug!("Legacy ping response failed: {}", e);
+                } else {
+                    debug!("Answered legacy server list ping from {}", addr);
+                }
+                break;
+            }
             Err(PacketProcessingError::Disconnected) => {
                 debug!("Client disconnected");
                 break;
