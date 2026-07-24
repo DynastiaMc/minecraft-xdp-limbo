@@ -444,15 +444,41 @@ async fn process_packet(
 /// reach this deadline. Only genuinely silent sockets do.
 const IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// [Dynastia] Much shorter deadline for the pre-play states (Handshake,
+/// Status). These states are meant to be transient — a status ping is a few
+/// round-trips and a login handshake arrives within one — so a client stuck
+/// here for seconds is always a degenerate case, never a healthy client.
+///
+/// The case we care about: the gate's cookie handshake converts the client's
+/// data-bearing 3rd ACK into a bare SYN and drops the piggybacked payload
+/// (the MC Handshake packet). On a high-RTT line the client piggybacks often,
+/// so its first packet is silently lost; PicoLimbo then sits in Handshake
+/// waiting for a packet that never comes. With the 30s IDLE_TIMEOUT that is a
+/// 30s freeze in the server list ("it spins"). Closing after 3s instead makes
+/// the client re-open a fresh connection — a new SYN, a new chance, usually
+/// without the piggyback — turning a 30s freeze into a ~3s retry.
+///
+/// Scoped to Handshake/Status ONLY. Login keeps the full timeout because
+/// premium auth (Mojang/nLogin) can legitimately take a few seconds, and Play
+/// (including waiting-room holds while the backend is down) is governed by the
+/// 15s keep-alive, never this path.
+const PREPLAY_TIMEOUT: Duration = Duration::from_secs(3);
+
 async fn read(
     addr: SocketAddr,
     client_data: &ClientData,
     server_state: &Arc<RwLock<ServerState>>,
     was_in_play_state: &mut bool,
 ) -> Result<(), PacketProcessingError> {
+    // Pick the read deadline from the current protocol state. Read the state
+    // in its own scope so the ClientState lock is not held across the select!.
+    let deadline = match client_data.client().await.state() {
+        State::Handshake | State::Status => PREPLAY_TIMEOUT,
+        _ => IDLE_TIMEOUT,
+    };
     tokio::select! {
-        result = tokio::time::timeout(IDLE_TIMEOUT, client_data.read_packet()) => {
-            // [Dynastia] Outer Err = the idle timeout elapsed; treat it as a
+        result = tokio::time::timeout(deadline, client_data.read_packet()) => {
+            // [Dynastia] Outer Err = the deadline elapsed; treat it as a
             // disconnect so handle_client breaks and calls shutdown().
             let raw_packet = match result {
                 Err(_elapsed) => return Err(PacketProcessingError::Disconnected),
