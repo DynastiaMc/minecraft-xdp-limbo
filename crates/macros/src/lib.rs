@@ -1,18 +1,17 @@
 use proc_macro::TokenStream;
 
-mod packet_in;
-mod packet_out;
 mod packet_reports;
+mod packets;
 mod registry_keys;
 
-#[proc_macro_derive(PacketIn, attributes(pvn))]
+#[proc_macro_derive(PacketIn, attributes(protocol_version))]
 pub fn parse_packet_in_derive(input: TokenStream) -> TokenStream {
-    packet_in::expand_parse_packet_in_derive(input)
+    packets::packet_in::expand_parse_packet_in_derive(input)
 }
 
-#[proc_macro_derive(PacketOut, attributes(pvn))]
+#[proc_macro_derive(PacketOut, attributes(protocol_version))]
 pub fn parse_out_packet_derive(input: TokenStream) -> TokenStream {
-    packet_out::expand_parse_out_packet_derive(input)
+    packets::packet_out::expand_parse_out_packet_derive(input)
 }
 
 #[proc_macro_derive(PacketReport, attributes(protocol_id))]

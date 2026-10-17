@@ -11,6 +11,10 @@ pub enum RegistryKeys {
     Root,
     #[registry(id = "minecraft:banner_pattern", min_version = V26_1, is_mandatory = true)]
     BannerPattern,
+    #[registry(id = "minecraft:block", min_version = V26_2, is_mandatory = true)]
+    Block,
+    #[registry(id = "minecraft:block_transformer", min_version = V26_3, is_mandatory = true)]
+    BlockTransformer,
     #[registry(id = "minecraft:cat_sound_variant", min_version = V26_1, is_mandatory = true)]
     CatSoundVariant,
     #[registry(id = "minecraft:cat_variant", min_version = V1_21_5, is_mandatory = true)]
@@ -27,6 +31,8 @@ pub enum RegistryKeys {
     DamageType,
     #[registry(id = "minecraft:dialog", min_version = V1_21_6, is_mandatory = true)]
     Dialog,
+    #[registry(id = "minecraft:decorated_pot_pattern", min_version = V26_3, is_mandatory = true)]
+    DecoratedPotPattern,
     #[registry(id = "minecraft:dimension_type", min_version = V1_16, is_mandatory = true)]
     DimensionType,
     #[registry(id = "minecraft:frog_variant", min_version = V1_21_5, is_mandatory = true)]
@@ -57,6 +63,13 @@ pub enum RegistryKeys {
     ZombieNautilusVariant,
     #[registry(custom)]
     Custom(Identifier),
+}
+
+impl RegistryKeys {
+    #[must_use]
+    pub const fn is_tag_only(&self) -> bool {
+        matches!(self, Self::Block)
+    }
 }
 
 impl Display for RegistryKeys {

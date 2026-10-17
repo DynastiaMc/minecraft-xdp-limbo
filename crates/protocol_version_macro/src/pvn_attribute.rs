@@ -1,19 +1,28 @@
 use syn::parse::{Parse, ParseStream};
-use syn::{Error, Ident, Result, Token};
+use syn::{Error, Ident, LitStr, Result, Token};
 
-/// Parses the `#[pvn(reports = "...", data = "...")]` attribute.
+/// Parses the `#[pvn(packets = "...", data = "...", known_packs = [...])]` attribute.
 pub struct PvnAttribute {
     pub packets: Option<Ident>,
     pub data: Option<Ident>,
+    pub known_packs: Vec<String>,
+    pub humanized: Option<String>,
 }
 
 impl Parse for PvnAttribute {
     fn parse(input: ParseStream) -> Result<Self> {
         let mut packets: Option<Ident> = None;
         let mut data: Option<Ident> = None;
+        let mut humanized: Option<String> = None;
+        let mut known_packs: Vec<String> = Vec::new();
 
         if input.is_empty() {
-            return Ok(PvnAttribute { packets, data });
+            return Ok(PvnAttribute {
+                packets,
+                data,
+                known_packs,
+                humanized,
+            });
         }
 
         let mut parse_kv = |input: ParseStream| -> Result<()> {
@@ -32,10 +41,29 @@ impl Parse for PvnAttribute {
                 }
                 let value: Ident = input.parse()?;
                 data = Some(value);
+            } else if ident == "humanized" {
+                if humanized.is_some() {
+                    return Err(Error::new(ident.span(), "duplicate `humanized` field"));
+                }
+                let value: LitStr = input.parse()?;
+                humanized = Some(value.value());
+            } else if ident == "known_packs" {
+                if !known_packs.is_empty() {
+                    return Err(Error::new(ident.span(), "duplicate `known_packs` field"));
+                }
+                let content;
+                syn::bracketed!(content in input);
+                while !content.is_empty() {
+                    let s: LitStr = content.parse()?;
+                    known_packs.push(s.value());
+                    if content.peek(Token![,]) {
+                        content.parse::<Token![,]>()?;
+                    }
+                }
             } else {
                 return Err(Error::new(
                     ident.span(),
-                    "expected either `packets` or `data`",
+                    "expected `packets`, `data`, or `known_packs`",
                 ));
             }
             Ok(())
@@ -47,6 +75,11 @@ impl Parse for PvnAttribute {
             parse_kv(input)?;
         }
 
-        Ok(PvnAttribute { packets, data })
+        Ok(PvnAttribute {
+            packets,
+            data,
+            known_packs,
+            humanized,
+        })
     }
 }

@@ -4,60 +4,85 @@ use crate::play::data::encode_as_bytes::EncodeAsBytes;
 use blocks_report::{BlockEntityTypeLookup, get_block_entity_lookup};
 use minecraft_protocol::prelude::*;
 use pico_nbt::{IndexMap, Value};
-use serde::Serialize;
 
-fn height_maps() -> Value {
+/// Function to generate the height maps NBT from 1.14 to 1.21.4
+fn height_maps(version: ProtocolVersion) -> Value {
     let mut compound = IndexMap::new();
-    compound.insert("MOTION_BLOCKING".to_string(), Value::LongArray(vec![0; 37]));
+    let length = if version.is_after_inclusive(ProtocolVersion::V1_16) {
+        37
+    } else {
+        36
+    };
+    compound.insert(
+        "MOTION_BLOCKING".to_string(),
+        Value::LongArray(vec![0; length]),
+    );
     Value::Compound(compound)
 }
 
 #[derive(PacketOut)]
-pub struct ChunkData {
-    #[pvn(..770)]
-    height_maps: Value,
+struct LegacyV1_14ChunkPayload {
+    sections: Vec<ChunkSection>,
+    #[protocol_version(max = V1_14_4)]
+    biomes: Vec<i32>,
+}
 
-    #[pvn(770..)]
+impl LegacyV1_14ChunkPayload {
+    fn new(sections: Vec<ChunkSection>, biome_id: i32) -> Self {
+        let biomes = vec![biome_id; 256];
+        Self { sections, biomes }
+    }
+}
+
+#[derive(PacketOut)]
+pub struct ChunkData {
+    #[protocol_version(min = V1_14, max = V1_21_4)]
+    v1_14_height_maps: Value,
+
+    #[protocol_version(min = V1_21_5)]
     v1_21_5_height_maps: LengthPaddedVec<HeightMap>,
 
     /// Biome IDs, ordered by x then z then y, in 4×4×4 blocks.
     /// Up until 1.17.1 included
-    #[pvn(751..757)]
+    #[protocol_version(min = V1_16_2, max = V1_17_1)]
     v1_16_2_biomes: LengthPaddedVec<VarInt>,
 
     /// This array is always of length 1024
-    #[pvn(..751)]
-    biomes: Vec<i32>,
+    #[protocol_version(min = V1_15, max = V1_16_1)]
+    v1_15_biomes: Vec<i32>,
 
-    data: EncodeAsBytes<Vec<ChunkSection>>,
+    data: EncodeAsBytes<LegacyV1_14ChunkPayload>,
 
     // 1.17 and below
-    #[pvn(..757)]
+    #[protocol_version(max = V1_17_1)]
     block_entities: LengthPaddedVec<Value>,
 
     // 1.18+
-    #[pvn(757..)]
+    #[protocol_version(min = V1_18)]
     v1_18_block_entities: LengthPaddedVec<ChunkBlockEntity>,
 }
 
 impl ChunkData {
     pub fn void(context: VoidChunkContext) -> Self {
-        let root_tag = height_maps();
+        let root_tag = height_maps(context.protocol_version);
 
         let section_count = context.dimension_height / ChunkSection::SECTION_SIZE;
 
         Self {
-            height_maps: root_tag,
+            v1_14_height_maps: root_tag,
             v1_21_5_height_maps: LengthPaddedVec::new(vec![HeightMap {
-                height_map_type: VarInt::new(4), // Motionblock type
-                data: LengthPaddedVec::new(vec![0; 37]),
+                height_map_type: VarInt::new(4),         // Motionblock type
+                data: LengthPaddedVec::new(vec![0; 37]), // Height map length is 37 starting 1.16, since this field is only sent starting 1.21.5, it is safe to hard-code to 37 here
             }]),
             v1_16_2_biomes: LengthPaddedVec::new(vec![VarInt::new(context.biome_index); 1024]),
-            biomes: vec![context.biome_index; 1024],
-            data: EncodeAsBytes::new(vec![
-                ChunkSection::void(context.biome_index);
-                section_count as usize
-            ]),
+            v1_15_biomes: vec![context.biome_index; 1024],
+            data: EncodeAsBytes::new(LegacyV1_14ChunkPayload::new(
+                vec![
+                    ChunkSection::void(context.biome_index, context.has_sky_light);
+                    section_count as usize
+                ],
+                context.biome_index,
+            )),
             block_entities: LengthPaddedVec::default(),
             v1_18_block_entities: LengthPaddedVec::default(),
         }
@@ -68,7 +93,7 @@ impl ChunkData {
         schematic_context: &WorldContext,
         protocol_version: ProtocolVersion,
     ) -> Self {
-        let root_tag = height_maps();
+        let root_tag = height_maps(chunk_context.protocol_version);
 
         let mut data = Vec::new();
         let negative_section_count =
@@ -83,6 +108,8 @@ impl ChunkData {
                 schematic_context,
                 coordinates,
                 chunk_context.biome_index,
+                chunk_context.protocol_version,
+                chunk_context.has_sky_light,
             );
             data.push(section);
         }
@@ -98,7 +125,7 @@ impl ChunkData {
         );
 
         Self {
-            height_maps: root_tag,
+            v1_14_height_maps: root_tag,
             v1_21_5_height_maps: LengthPaddedVec::new(vec![HeightMap {
                 height_map_type: VarInt::new(4), // Motionblock type
                 data: LengthPaddedVec::new(vec![0; 37]),
@@ -107,8 +134,11 @@ impl ChunkData {
                 VarInt::new(chunk_context.biome_index);
                 1024
             ]),
-            biomes: vec![chunk_context.biome_index; 1024],
-            data: EncodeAsBytes::new(data),
+            v1_15_biomes: vec![chunk_context.biome_index; 1024],
+            data: EncodeAsBytes::new(LegacyV1_14ChunkPayload::new(
+                data,
+                chunk_context.biome_index,
+            )),
             block_entities: LengthPaddedVec::new(block_entities_legacy),
             v1_18_block_entities: LengthPaddedVec::new(block_entities),
         }
@@ -139,7 +169,9 @@ impl ChunkData {
                 continue;
             };
 
-            let nbt = entity_data.to_nbt(protocol_version);
+            let Ok(nbt) = entity_data.to_nbt(protocol_version) else {
+                continue;
+            };
 
             let coordinates = entity_data.get_position() + schematic_context.paste_origin;
 
@@ -151,29 +183,15 @@ impl ChunkData {
                     VarInt::new(protocol_id),
                     nbt,
                 ));
-            } else {
-                #[derive(Serialize)]
-                struct ChunkBlockEntity {
-                    id: String,
-                    x: i32,
-                    y: i32,
-                    z: i32,
-                    #[serde(flatten)]
-                    data: Value,
-                }
-
-                let nbt_fields = ChunkBlockEntity {
-                    id: entity_data.block_entity_type.to_string(),
-                    x: coordinates.x(),
-                    y: coordinates.y(),
-                    z: coordinates.z(),
-                    data: nbt,
-                };
-
-                block_entities.push(
-                    pico_nbt::to_value(nbt_fields)
-                        .expect("Failed to convert block entity to nbt value"),
+            } else if let Value::Compound(mut fields) = nbt {
+                fields.insert(
+                    "id".into(),
+                    entity_data.block_entity_type.to_string().into(),
                 );
+                fields.insert("x".into(), Value::Int(coordinates.x()));
+                fields.insert("y".into(), Value::Int(coordinates.y()));
+                fields.insert("z".into(), Value::Int(coordinates.z()));
+                block_entities.push(Value::Compound(fields));
             }
         }
 
@@ -225,6 +243,78 @@ impl ChunkBlockEntity {
             y: world_y as i16,
             block_entity_type,
             data,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn encoded_void(version: ProtocolVersion, has_sky_light: bool) -> Vec<u8> {
+        let chunk = ChunkData::void(VoidChunkContext {
+            chunk_x: 0,
+            chunk_z: 0,
+            biome_index: 1,
+            dimension_height: 256,
+            dimension_min_y: 0,
+            has_sky_light,
+            protocol_version: version,
+        });
+        let mut writer = BinaryWriter::new();
+        chunk.encode(&mut writer, version).unwrap();
+        writer.into_inner()
+    }
+
+    #[test]
+    fn legacy_chunk_sections_and_biomes_stay_aligned_without_skylight() {
+        for version in [
+            ProtocolVersion::V1_13,
+            ProtocolVersion::V1_13_1,
+            ProtocolVersion::V1_13_2,
+        ] {
+            for has_sky_light in [false, true] {
+                let bytes = encoded_void(version, has_sky_light);
+                let mut reader = BinaryReader::new(&bytes);
+                let payload_size = reader.read::<VarInt>().unwrap();
+                let payload_start = reader.position();
+                for _ in 0..16 {
+                    assert_eq!(reader.read::<u8>().unwrap(), 4);
+                    assert_eq!(reader.read::<VarInt>().unwrap(), VarInt::new(1));
+                    assert_eq!(reader.read::<VarInt>().unwrap(), VarInt::new(0));
+                    assert_eq!(reader.read::<VarInt>().unwrap(), VarInt::new(256));
+                    for _ in 0..256 {
+                        assert_eq!(reader.read::<u64>().unwrap(), 0);
+                    }
+                    let mut light = [0u8; 2048];
+                    assert_eq!(reader.read_bytes(&mut light).unwrap(), light.len());
+                    assert!(light.iter().all(|&value| value == 0));
+                    if has_sky_light {
+                        assert_eq!(reader.read_bytes(&mut light).unwrap(), light.len());
+                        assert!(light.iter().all(|&value| value == 0xff));
+                    }
+                }
+                for _ in 0..256 {
+                    assert_eq!(reader.read::<i32>().unwrap(), 1);
+                }
+                assert_eq!(
+                    payload_size,
+                    VarInt::new((reader.position() - payload_start) as i32)
+                );
+                assert_eq!(reader.read::<VarInt>().unwrap(), VarInt::new(0));
+                assert_eq!(reader.remaining(), 0);
+            }
+        }
+    }
+
+    #[test]
+    fn modern_chunk_data_omits_inline_light_in_every_dimension() {
+        for version in [
+            ProtocolVersion::V1_14,
+            ProtocolVersion::V1_18,
+            ProtocolVersion::V26_3,
+        ] {
+            assert_eq!(encoded_void(version, false), encoded_void(version, true));
         }
     }
 }

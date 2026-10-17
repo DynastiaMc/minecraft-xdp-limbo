@@ -42,6 +42,7 @@ pub fn packet_report_derive(input: TokenStream) -> TokenStream {
 
     let decode_impl = generate_decode_impl(&variants, &protocol_data);
     let encode_impl = generate_encode_impl(enum_ident, &variants, &protocol_data);
+    let name_impl = generate_packet_name_impl(&variants);
 
     let expanded = quote! {
         #[derive(Debug, thiserror::Error)]
@@ -69,6 +70,7 @@ pub fn packet_report_derive(input: TokenStream) -> TokenStream {
         impl #enum_ident {
             #decode_impl
             #encode_impl
+            #name_impl
         }
     };
 
@@ -177,16 +179,16 @@ fn load_all_protocol_data() -> HashMap<String, RawPacketData> {
     let data_dir = manifest_dir
         .parent()
         .unwrap()
-        .join("data")
-        .join("generated");
+        .join("data_generator")
+        .join("data");
 
     let mut all_data = HashMap::new();
 
-    for entry in fs::read_dir(data_dir).expect("Failed to read data/generated directory") {
+    for entry in fs::read_dir(data_dir).expect("Failed to read data_generator/data directory") {
         let entry = entry.unwrap();
         if entry.file_type().unwrap().is_dir() {
             let version_name = entry.file_name().into_string().unwrap();
-            let report_path = entry.path().join("reports").join("packets.json");
+            let report_path = entry.path().join("packets.json");
 
             if report_path.exists() {
                 let content = fs::read_to_string(&report_path)
@@ -320,6 +322,25 @@ fn generate_encode_impl(
                 _ => return Err(PacketRegistryEncodeError::CannotBeEncoded),
             };
             Ok(raw_packet)
+        }
+    }
+}
+
+fn generate_packet_name_impl(variants: &[PacketVariantInfo]) -> proc_macro2::TokenStream {
+    let arms = variants.iter().map(|variant_info| {
+        let variant_ident = &variant_info.variant_ident;
+        let packet_name = &variant_info.name;
+
+        quote! {
+            Self::#variant_ident(_) => #packet_name,
+        }
+    });
+
+    quote! {
+        pub fn packet_name(&self) -> &'static str {
+            match self {
+                #(#arms)*
+            }
         }
     }
 }

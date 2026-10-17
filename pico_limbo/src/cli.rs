@@ -3,10 +3,11 @@ use std::path::PathBuf;
 
 #[derive(Parser, Clone)]
 #[command(
+    version,
     about = "A lightweight Minecraft server written in Rust supporting all Minecraft versions"
 )]
 pub struct Cli {
-    /// Enable verbose logging
+    /// Enable verbose logging.
     #[arg(
         short = 'v',
         long = "verbose",
@@ -15,7 +16,7 @@ pub struct Cli {
     )]
     pub verbose: u8,
 
-    /// Path to the TOML configuration file
+    /// Path to the TOML configuration file.
     #[arg(
         short = 'c',
         long = "config",
@@ -24,4 +25,31 @@ pub struct Cli {
         help = "Configuration file path"
     )]
     pub config_path: PathBuf,
+
+    /// Path to where the log files will be stored; If not set, will disable file logging.
+    #[arg(
+        short = 'l',
+        long = "log-path",
+        value_name = "LOG_PATH",
+        help = "Path to the log files"
+    )]
+    pub log_path: Option<PathBuf>,
+
+    /// Port to listen on. Defaults back to the port defined in the configuration file if not specified.
+    #[arg(
+        short = 'p',
+        long = "port",
+        value_name = "PORT",
+        help = "Port to listen on"
+    )]
+    pub port: Option<u16>,
+
+    /// If set to true, the banner will not be displayed.
+    #[arg(
+        long = "skip-banner",
+        value_name = "SKIP_BANNER",
+        help = "Whether to skip the banner or not",
+        default_value_t = false
+    )]
+    pub skip_banner: bool,
 }

@@ -20,7 +20,7 @@ Specify a custom configuration file path:
 pico_limbo --config /path/to/your/config.toml
 ```
 
-### Logging Options
+### Verbosity
 
 Control the verbosity of server logs:
 
@@ -32,6 +32,24 @@ pico_limbo -v
 pico_limbo -vv
 ```
 
+### File Logging
+
+Enable file logging:
+
+```bash
+pico_limbo --log-path=/var/log/picolimbo
+```
+
+Logging files will be rotated every day.
+
+### Port override
+
+Override the port configured in the configuration file:
+
+```bash
+pico_limbo --port 30066
+```
+
 ## Advanced Options
 
 ### Version Information
@@ -40,6 +58,15 @@ Display version information:
 
 ```bash
 pico_limbo --version
+```
+
+### Hide Banner
+
+When PicoLimbo starts, a banner is displayed to inform users of the server version.
+You can hide this banner by passing the `--skip-banner` flag:
+
+```bash
+pico_limbo --skip-banner
 ```
 
 ### Help

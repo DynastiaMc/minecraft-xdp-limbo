@@ -5,21 +5,22 @@ use crate::server::batch::Batch;
 use crate::server::client_state::ClientState;
 use crate::server::game_profile::GameProfile;
 use crate::server::packet_handler::{PacketHandler, PacketHandlerError};
-use crate::server::packet_registry::PacketRegistry;
 use crate::server_state::ServerState;
 use minecraft_packets::handshaking::handshake_packet::HandshakePacket;
 use minecraft_protocol::prelude::{ProtocolVersion, State};
 use thiserror::Error;
+use tracing::debug;
 
 impl PacketHandler for HandshakePacket {
     fn handle(
         &self,
         client_state: &mut ClientState,
         server_state: &ServerState,
-    ) -> Result<Batch<PacketRegistry>, PacketHandlerError> {
-        let batch = Batch::new();
-        client_state
-            .set_protocol_version(self.get_protocol(server_state.allow_unsupported_versions()));
+    ) -> Result<Batch, PacketHandlerError> {
+        let mut batch = Batch::new();
+        let protocol_version = self.get_protocol(server_state.allow_unsupported_versions());
+        debug!("Client requested protocol version {}", protocol_version);
+        client_state.set_protocol_version(protocol_version);
 
         self.get_next_state().map_or_else(
             |err| {
@@ -29,7 +30,7 @@ impl PacketHandler for HandshakePacket {
                 )))
             },
             |next_state| {
-                client_state.set_state(next_state);
+                batch.queue_both_state_change(next_state);
 
                 match next_state {
                     State::Status => {
@@ -53,6 +54,10 @@ impl PacketHandler for HandshakePacket {
                     }
                     State::Transfer => {
                         if server_state.accept_transfers() {
+                            // [Dynastia] Queue Login BEFORE the version gate: the
+                            // kick is sent with the clientbound state applied by the
+                            // batch, and Transfer has no disconnect packet.
+                            batch.queue_both_state_change(State::Login);
                             let client_proto = client_state.protocol_version().version_number();
                             if !server_state.vg_in_range(client_proto) {
                                 let msg = server_state.vg_kick_message()
@@ -60,7 +65,6 @@ impl PacketHandler for HandshakePacket {
                                 client_state.kick(&msg);
                                 return Ok(batch);
                             }
-                            client_state.set_state(State::Login);
                             begin_login(client_state, server_state, &self.hostname)?;
                             Ok(batch)
                         } else {
@@ -87,7 +91,21 @@ fn begin_login(
             client_state.protocol_version()
         )));
     }
-    let forwarding_result = check_bungee_cord(server_state, hostname);
+    let (clean_hostname, floodgate_data) = server_state
+        .floodgate()
+        .parse_hostname(hostname)
+        .map_err(|error| PacketHandlerError::invalid_state(&error))?;
+
+    if let Some(data) = floodgate_data {
+        let (username, uuid) = server_state
+            .floodgate()
+            .game_profile(&data)
+            .map_err(|error| PacketHandlerError::invalid_state(&error))?;
+        client_state.set_game_profile(GameProfile::new(&username, uuid, None));
+        return Ok(());
+    }
+
+    let forwarding_result = check_bungee_cord(server_state, &clean_hostname);
     match forwarding_result {
         LegacyForwardingResult::Invalid => {
             client_state.kick(PROXY_REQUIRED_KICK_MESSAGE);
@@ -155,12 +173,18 @@ mod tests {
     fn bungee_cord() -> ServerState {
         let mut server_state_builder = ServerState::builder();
         server_state_builder.enable_legacy_forwarding();
+        // [Dynastia] open the version gate so the forwarding check is reached.
+        server_state_builder.set_version_gate(&crate::configuration::config::VersionGateConfig {
+            min_protocol: 766,
+            max_protocol: i32::MAX,
+            kick_message: String::new(),
+        });
         server_state_builder.set_reply_to_status(true);
         server_state_builder.build().unwrap()
     }
 
-    #[test]
-    fn test_handshake_handler_should_update_client_state_to_login() {
+    #[tokio::test]
+    async fn test_handshake_handler_should_update_client_state_to_login() {
         // Given
         let mut client_state = ClientState::default();
         let handshake_packet = HandshakePacket {
@@ -171,16 +195,18 @@ mod tests {
         };
 
         // When
-        handshake_packet
+        let mut batch = handshake_packet
             .handle(&mut client_state, &server_state())
-            .unwrap();
+            .unwrap()
+            .into_stream();
 
         // Then
-        assert_eq!(client_state.state(), State::Login);
+        batch.assert_client_state(State::Login).await;
+        batch.assert_server_state(State::Login).await;
     }
 
-    #[test]
-    fn test_handshake_handler_should_update_client_state_to_status() {
+    #[tokio::test]
+    async fn test_handshake_handler_should_update_client_state_to_status() {
         // Given
         let mut client_state = ClientState::default();
         let handshake_packet = HandshakePacket {
@@ -191,12 +217,14 @@ mod tests {
         };
 
         // When
-        handshake_packet
+        let mut batch = handshake_packet
             .handle(&mut client_state, &server_state())
-            .unwrap();
+            .unwrap()
+            .into_stream();
 
         // Then
-        assert_eq!(client_state.state(), State::Status);
+        batch.assert_client_state(State::Status).await;
+        batch.assert_server_state(State::Status).await;
     }
 
     #[test]
@@ -241,7 +269,56 @@ mod tests {
     }
 
     #[test]
-    fn test_handshake_handler_should_change_state_when_bungee_cord_handshake_is_valid() {
+    fn test_handshake_handler_should_guess_latest_version_when_unsupported_versions_are_allowed() {
+        // Given: a client whose protocol number is not supported yet (e.g. a
+        // brand-new stable release), with `allow_unsupported_versions` enabled.
+        let mut server_state_builder = ServerState::builder();
+        server_state_builder.set_reply_to_status(true);
+        server_state_builder.set_allow_unsupported_versions(true);
+        let server_state = server_state_builder.build().unwrap();
+
+        let mut client_state = ClientState::default();
+        let handshake_packet = HandshakePacket {
+            protocol: VarInt::new(999),
+            hostname: String::new(),
+            next_state: VarInt::new(2),
+            port: 25565,
+        };
+
+        // When
+        let result = handshake_packet.handle(&mut client_state, &server_state);
+
+        // Then: the latest supported implementation is used instead of a rejection.
+        assert!(result.is_ok());
+        assert_eq!(client_state.protocol_version(), ProtocolVersion::latest());
+    }
+
+    #[test]
+    fn test_handshake_handler_should_kick_when_unsupported_versions_are_not_allowed() {
+        // Given: the same unknown protocol number, with the default settings.
+        let mut client_state = ClientState::default();
+        let handshake_packet = HandshakePacket {
+            protocol: VarInt::new(999),
+            hostname: String::new(),
+            next_state: VarInt::new(2),
+            port: 25565,
+        };
+
+        // When
+        let result = handshake_packet.handle(&mut client_state, &server_state());
+
+        // Then: [Dynastia] the version gate refuses it first, with its kick
+        // message (upstream would return InvalidState from begin_login).
+        assert!(result.is_ok());
+        assert!(client_state.should_kick().is_some());
+        assert_eq!(
+            client_state.protocol_version(),
+            ProtocolVersion::Unsupported
+        );
+    }
+
+    #[tokio::test]
+    async fn test_handshake_handler_should_change_state_when_bungee_cord_handshake_is_valid() {
         // Given
         let mut client_state = ClientState::default();
         let handshake_packet = HandshakePacket {
@@ -252,12 +329,14 @@ mod tests {
         };
 
         // When
-        handshake_packet
+        let mut batch = handshake_packet
             .handle(&mut client_state, &bungee_cord())
-            .unwrap();
+            .unwrap()
+            .into_stream();
 
         // Then
-        assert_eq!(client_state.state(), State::Login);
+        batch.assert_client_state(State::Login).await;
+        batch.assert_server_state(State::Login).await;
     }
 
     #[test]
@@ -265,7 +344,8 @@ mod tests {
         // Given
         let mut client_state = ClientState::default();
         let handshake_packet = HandshakePacket {
-            protocol: VarInt::new(578),
+            // [Dynastia] inside the version gate range, so the bungee check is reached.
+            protocol: VarInt::new(775),
             hostname: String::new(),
             next_state: VarInt::new(2),
             port: 25565,
@@ -285,8 +365,8 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn test_handshake_handler_update_state_to_status_when_bungee_cord_is_enabled() {
+    #[tokio::test]
+    async fn test_handshake_handler_update_state_to_status_when_bungee_cord_is_enabled() {
         // Given
         let mut client_state = ClientState::default();
         let handshake_packet = HandshakePacket {
@@ -297,11 +377,13 @@ mod tests {
         };
 
         // When
-        handshake_packet
+        let mut batch = handshake_packet
             .handle(&mut client_state, &bungee_cord())
-            .unwrap();
+            .unwrap()
+            .into_stream();
 
         // Then
-        assert_eq!(client_state.state(), State::Status);
+        batch.assert_client_state(State::Status).await;
+        batch.assert_server_state(State::Status).await;
     }
 }

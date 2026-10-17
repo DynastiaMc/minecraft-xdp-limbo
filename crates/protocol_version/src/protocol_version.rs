@@ -4,21 +4,32 @@ use std::cmp::PartialEq;
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord, Pvn)]
 #[repr(i32)]
 pub enum ProtocolVersion {
+    #[pvn(known_packs = ["26.3"], humanized = "26.3")]
+    V26_3 = 777,
     #[default]
+    #[pvn(known_packs = ["26.2"])]
+    V26_2 = 776,
+    #[pvn(known_packs = ["26.1", "26.1.1", "26.1.2"])]
     V26_1 = 775,
-    #[pvn(packets = V1_21_9)]
+    #[pvn(packets = V1_21_9, known_packs = ["1.21.11"])]
     V1_21_11 = 774,
-    #[pvn(data = V1_21_6)]
+    #[pvn(data = V1_21_6, known_packs = ["1.21.9", "1.21.10"])]
     V1_21_9 = 773,
-    #[pvn(packets = V1_21_6, data = V1_21_6)]
+    #[pvn(packets = V1_21_6, data = V1_21_6, known_packs = ["1.21.7", "1.21.8"])]
     V1_21_7 = 772,
+    #[pvn(known_packs = ["1.21.6"])]
     V1_21_6 = 771,
+    #[pvn(known_packs = ["1.21.5"])]
     V1_21_5 = 770,
+    #[pvn(known_packs = ["1.21.4"])]
     V1_21_4 = 769,
     /// Docs: https://minecraft.wiki/w/Java_Edition_protocol/Packets?oldid=2780220
+    #[pvn(known_packs = ["1.21.2", "1.21.3"])]
     V1_21_2 = 768,
+    #[pvn(known_packs = ["1.21", "1.21.1"])]
     V1_21 = 767,
 
+    #[pvn(known_packs = ["1.20.5", "1.20.6"])]
     V1_20_5 = 766,
     #[pvn(data = V1_20_2)]
     V1_20_3 = 765,
@@ -169,6 +180,26 @@ mod tests {
 
         assert_eq!(v1_7_6.packets(), v1_7_2);
         assert_eq!(v1_7_2.packets(), v1_7_2);
+    }
+
+    #[test]
+    fn test_unknown_versions_fall_back_to_latest() {
+        // A snapshot/pre-release newer than the latest known one.
+        assert_eq!(ProtocolVersion::from(i32::MAX), ProtocolVersion::latest());
+        // A brand-new stable release (the number right after the latest stable),
+        // served with the latest implementation until support is added.
+        assert_eq!(ProtocolVersion::from(999), ProtocolVersion::latest());
+    }
+
+    #[test]
+    fn test_unknown_versions_older_than_everything_fall_back_to_oldest() {
+        assert_eq!(ProtocolVersion::from(3), ProtocolVersion::oldest());
+    }
+
+    #[test]
+    fn test_strict_lookup_rejects_unknown_versions() {
+        // The path used when `allow_unsupported_versions` is disabled.
+        assert!(ProtocolVersion::try_from(999).is_err());
     }
 
     #[test]

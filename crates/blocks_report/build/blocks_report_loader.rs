@@ -49,8 +49,8 @@ pub fn load_block_data() -> anyhow::Result<Vec<BlocksReport>> {
         .unwrap()
         .parent()
         .unwrap()
-        .join("data")
-        .join("generated");
+        .join("data_generator")
+        .join("data");
 
     let mut block_data_list: Vec<BlocksReport> = fs::read_dir(data_dir)?
         .filter_map(|result| result.ok())
@@ -59,9 +59,9 @@ pub fn load_block_data() -> anyhow::Result<Vec<BlocksReport>> {
             ProtocolVersion::from_str(&name)
                 .ok()
                 .and_then(|protocol_version| {
-                    if protocol_version.is_after_inclusive(ProtocolVersion::V1_16) {
+                    if protocol_version.is_after_inclusive(ProtocolVersion::V1_13) {
                         let version_path = entry.path();
-                        let blocks_report_path = version_path.join("reports").join("blocks.json");
+                        let blocks_report_path = version_path.join("blocks.json");
                         fs::read_to_string(&blocks_report_path)
                             .ok()
                             .and_then(|blocks_str| {
@@ -79,6 +79,6 @@ pub fn load_block_data() -> anyhow::Result<Vec<BlocksReport>> {
         })
         .collect();
 
-    block_data_list.sort_by(|a, b| a.protocol_version.cmp(&b.protocol_version));
+    block_data_list.sort_by_key(|a| a.protocol_version);
     Ok(block_data_list)
 }

@@ -13,7 +13,7 @@ impl PacketHandler for StatusRequestPacket {
         &self,
         client_state: &mut ClientState,
         server_state: &ServerState,
-    ) -> Result<Batch<PacketRegistry>, PacketHandlerError> {
+    ) -> Result<Batch, PacketHandlerError> {
         let mut batch = Batch::new();
 
         // Serve the cached upstream status (MOTD, players, icon) with two tweaks:

@@ -1,31 +1,17 @@
 use crate::play::data::block_pos::BlockPos;
+use crate::play::data::global_pos::GlobalPos;
 use minecraft_protocol::prelude::*;
-
-#[derive(PacketOut)]
-struct GlobalPos {
-    dimension: Identifier,
-    block_pos: BlockPos,
-}
-
-impl GlobalPos {
-    fn new(dimension: Identifier, block_pos: BlockPos) -> Self {
-        Self {
-            dimension,
-            block_pos,
-        }
-    }
-}
 
 /// This packet is only required starting from 1.19.
 #[derive(PacketOut)]
 pub struct SetDefaultSpawnPositionPacket {
-    #[pvn(..773)]
+    #[protocol_version(max = V1_21_7)]
     location: Position,
-    #[pvn(773..)]
+    #[protocol_version(min = V1_21_9)]
     v1_21_9_respawn_data: GlobalPos,
-    #[pvn(755..)]
+    #[protocol_version(min = V1_17)]
     angle: f32,
-    #[pvn(773..)]
+    #[protocol_version(min = V1_21_9)]
     v1_21_9_pitch: f32,
 }
 

@@ -5,25 +5,38 @@ use minecraft_protocol::prelude::*;
 #[derive(Clone, PacketOut)]
 pub struct ChunkSection {
     /// Number of non-air blocks present in the chunk section.
+    #[protocol_version(min = V1_14)]
     pub block_count: i16,
-    #[pvn(775..)]
+    #[protocol_version(min = V26_1)]
     pub fluid_count: i16,
     /// Consists of 4096 entries, representing all the blocks in the chunk section.
     pub block_states: PaletteContainer,
     /// Consists of 64 entries, representing 4×4×4 biome regions in the chunk section.
-    #[pvn(757..)]
+    #[protocol_version(min = V1_18)]
     pub biomes: PaletteContainer,
+    /// Half byte per block
+    #[protocol_version(max = V1_13_2)]
+    pub block_light: Vec<u8>,
+    /// Only if in the Overworld; half byte per block
+    #[protocol_version(max = V1_13_2)]
+    pub sky_light: Omitted<Vec<u8>>,
 }
 
 impl ChunkSection {
     pub const SECTION_SIZE: i32 = 16;
 
-    pub fn void(biome_id: i32) -> Self {
+    pub fn void(biome_id: i32, has_sky_light: bool) -> Self {
         Self {
             block_count: 0,
             fluid_count: 0,
             block_states: PaletteContainer::blocks_void(),
             biomes: PaletteContainer::single_valued(biome_id),
+            block_light: vec![0; 2048],
+            sky_light: if has_sky_light {
+                Omitted::Some(vec![0xFF; 2048])
+            } else {
+                Omitted::None
+            },
         }
     }
 
@@ -31,20 +44,31 @@ impl ChunkSection {
         context: &WorldContext,
         section_position: Coordinates,
         biome_id: i32,
+        version: ProtocolVersion,
+        has_sky_light: bool,
     ) -> ChunkSection {
         if let Some(palette) = context.world.get_section(&section_position) {
-            let block_states =
-                PaletteContainer::from_palette(palette, context.report_id_mapping.as_ref());
+            let block_states = PaletteContainer::from_palette(
+                palette,
+                context.report_id_mapping.as_ref(),
+                version,
+            );
             let biomes = PaletteContainer::single_valued(biome_id);
 
             ChunkSection {
-                block_count: 4096,
+                block_count: 4096, // FIXME: Compute this from actual air blocks amount, not a big issue
                 fluid_count: 0,
                 block_states,
                 biomes,
+                block_light: vec![0; 2048],
+                sky_light: if has_sky_light {
+                    Omitted::Some(vec![0xFF; 2048])
+                } else {
+                    Omitted::None
+                },
             }
         } else {
-            Self::void(biome_id)
+            Self::void(biome_id, has_sky_light)
         }
     }
 }
@@ -93,7 +117,7 @@ mod tests {
 
     fn create_packet() -> ChunkSection {
         let biome_id = 127;
-        ChunkSection::void(biome_id)
+        ChunkSection::void(biome_id, true)
     }
 
     #[test]

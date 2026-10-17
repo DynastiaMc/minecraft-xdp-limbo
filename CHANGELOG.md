@@ -5,6 +5,108 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Support for Floodgate/EduFloodgate
+
+### Updated
+
+- Upgraded to Rust 1.99.0 and updated dependencies
+
+## [1.14.1+mc26.3] - 2026-09-23
+
+### Fixed
+
+- fix(minimessage): handle closing tags in MiniMessage (#99)
+- fix(chunks): omit legacy skylight outside the overworld (#100)
+- fix(structures): preserve player heads, signs, and block entity data (#96)
+- fix(chunks): only warn when no block mapping exists for version (#101)
+
+## [1.14.0+mc26.3] - 2026-09-18
+
+### Added
+
+- Support for Minecraft 26.3
+
+### Updated
+
+- Upgraded quick-xml to 0.42.0
+
+## [1.14.0-beta.1+mc26.3-pre-2] - 2026-09-05
+
+### Added
+
+- File logging (#53)
+- Schematic support from 1.13.x, 1.14.x, and 1.15.x
+- Support for Minecraft 26.3-pre-2
+- New data generator written in Rust
+
+### Fixed
+
+- Lighting set to full bright for 1.16 and 1.17
+- Invalid palette parsing
+
+### Updated
+
+- Updated to Rust 1.98.1
+- Registries are now saved as NBT binaries instead of JSON files
+- Updated to Velocity 4.1.1
+
+### Removed
+
+- JSON registry files
+- TypeScript data generator
+
+## [1.13.2+mc26.2] - 2026-07-24
+
+### Updated
+
+- Updated Java Wrapper's minimum Java version to 25
+- Updated Java Wrapper's Velocity, Bungeecord, and JNA versions
+
+### Fixed
+
+- GNU/Linux binaries and the Java Wrapper now support glibc 2.28 and newer
+
+## [1.13.1+mc26.2] - 2026-06-22
+
+### Fixed
+
+- Missing blocks.json mappings for 1.21.7 through 1.21.10
+
+## [1.13.0+mc26.2] - 2026-06-16
+
+### Added
+
+- New `keep_alive_interval_seconds` setting (defaults to 15, matching vanilla) to control how often the server sends `keep_alive` packets (PR #79)
+- Nix flake (PR #74)
+- Flying speed can be configured (PR #84)
+- Add a new CLI parameter to override port from the configuration file (PR #85)
+- Added startup banner
+- Added support for 26.2
+
+### Updated
+
+- Updated to Rust 1.96.0 and updated dependencies
+- Moved the `allow_unsupported_versions` setting to `connection` section
+- Switched entity ID to 1 instead of 0 for players which should fix broken firework elytra boosting after changing server (PR #82)
+
+### Fixed
+
+- The plugin doesn't shutdown when shutting down the proxy (PR #69)
+- PicoLimbo should wait for client known packs before sending registry data (starting 1.20.5) (PR #78)
+- Registries’ data is omitted if it is known by the client (starting 1.21.5) (PR #75)
+- Fixed connection dropped while held in configuration state for too long (PR #79)
+- Fixed the local Dockerfile build
+
+## [1.12.2+mc26.1.2] - 2026-04-12
+
+### Fixed
+
+- Cobblestone blocks being placed instead of air blocks outside the schematic range
+
 ## [1.12.1+mc26.1.1] - 2026-04-03
 
 ### Fixed
@@ -64,7 +166,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Add skylight and block light calculation for schematics (1.18+)
 - Allow renaming and disabling commands
 - Allow player to toggle fly and change flyspeed
-- Java wrapper to run PicoLimbo as a Velocity plugin, BungeeCord plugin or standalone using the Java runtime
+- Java wrapper to run PicoLimbo as a Velocity plugin, BungeeCord plugin, or standalone using the Java runtime
 
 ### Updated
 

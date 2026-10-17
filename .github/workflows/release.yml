@@ -10,13 +10,13 @@ on:
     tags:
       - 'v*'
     paths:
-      - 'binaries/**'
       - 'crates/**'
       - 'data/generated/**'
+      - 'docker/Dockerfile.ci'
       - 'java_wrapper/**'
+      - 'pico_libraries/**'
       - 'Cargo.lock'
       - 'Cargo.toml'
-      - 'docker/Dockerfile.ci'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -26,37 +26,29 @@ env:
   CARGO_TERM_COLOR: always
   BINARY_NAME: pico_limbo
   LIB_NAME: pico_limbo_lib
+  ZIG_VERSION: 0.14.1
+  CARGO_ZIGBUILD_VERSION: 0.23.0
+  GLIBC_VERSION: '2.28'
 
 jobs:
-  build-linux:
+  build-linux-musl:
     strategy:
       matrix:
         include:
           - target: x86_64-unknown-linux-musl
             name: linux-x86_64-musl
             runner: ubuntu-latest
-            library: false
           - target: aarch64-unknown-linux-musl
             name: linux-aarch64-musl
             runner: ubuntu-24.04-arm
-            library: false
-          - target: x86_64-unknown-linux-gnu
-            name: linux-x86_64-gnu
-            runner: ubuntu-latest
-            library: true
-          - target: aarch64-unknown-linux-gnu
-            name: linux-aarch64-gnu
-            runner: ubuntu-24.04-arm
-            library: true
 
     runs-on: ${{ matrix.runner }}
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Install musl-tools
-        if: contains(matrix.target, 'musl')
         run: |
           sudo apt-get update -y
           sudo apt-get install -y musl-tools
@@ -65,7 +57,7 @@ jobs:
         run: rustup target add ${{ matrix.target }}
 
       - name: Cache Cargo dependencies
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
@@ -76,20 +68,69 @@ jobs:
             ${{ runner.os }}-${{ runner.arch }}-cargo-${{ matrix.target }}-
             ${{ runner.os }}-${{ runner.arch }}-cargo-
 
-      # Build Command:
-      # If matrix.library is true (GNU), we add --lib to build the .so file
-      # If false (Musl), we only build the binary to avoid the "cdylib not supported" error
       - name: Build
+        run: cargo build --release --target ${{ matrix.target }} --bin ${{ env.BINARY_NAME }}
+
+      - name: Prepare artifacts
         run: |
-          if [ "${{ matrix.library }}" = "true" ]; then
-            cargo build --release --target ${{ matrix.target }} --bin ${{ env.BINARY_NAME }} --lib
-          else
-            cargo build --release --target ${{ matrix.target }} --bin ${{ env.BINARY_NAME }}
-          fi
+          mkdir -p artifacts
+          cp target/${{ matrix.target }}/release/${{ env.BINARY_NAME }} artifacts/
+          cd artifacts && tar -czf ../${{ env.BINARY_NAME }}_${{ matrix.name }}.tar.gz *
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ env.BINARY_NAME }}_${{ matrix.name }}
+          path: ${{ env.BINARY_NAME }}_${{ matrix.name }}.tar.gz
+
+  build-linux-gnu:
+    strategy:
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            name: linux-x86_64-gnu
+            runner: ubuntu-latest
+            zig-arch: x86_64
+          - target: aarch64-unknown-linux-gnu
+            name: linux-aarch64-gnu
+            runner: ubuntu-24.04-arm
+            zig-arch: aarch64
+
+    runs-on: ${{ matrix.runner }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install Zig
+        run: |
+          curl -fsSLO "https://ziglang.org/download/${ZIG_VERSION}/zig-${{ matrix.zig-arch }}-linux-${ZIG_VERSION}.tar.xz"
+          tar -xf "zig-${{ matrix.zig-arch }}-linux-${ZIG_VERSION}.tar.xz"
+          echo "$PWD/zig-${{ matrix.zig-arch }}-linux-${ZIG_VERSION}" >> "$GITHUB_PATH"
+
+      - name: Install Rust target
+        run: rustup target add ${{ matrix.target }}
+
+      - name: Cache Cargo dependencies
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-${{ runner.arch }}-cargo-zigbuild-${{ matrix.target }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ runner.arch }}-cargo-zigbuild-${{ matrix.target }}-
+            ${{ runner.os }}-${{ runner.arch }}-cargo-zigbuild-
+
+      - name: Install cargo-zigbuild
+        run: cargo install cargo-zigbuild --locked --version "${CARGO_ZIGBUILD_VERSION}"
+
+      - name: Build
+        run: cargo zigbuild --release --lib --bin ${{ env.BINARY_NAME }} --target "${{ matrix.target }}.${GLIBC_VERSION}"
 
       - name: Upload Library for Java
-        if: matrix.library == true
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: lib-${{ matrix.name }}
           path: target/${{ matrix.target }}/release/lib${{ env.LIB_NAME }}.so
@@ -101,7 +142,7 @@ jobs:
           cd artifacts && tar -czf ../${{ env.BINARY_NAME }}_${{ matrix.name }}.tar.gz *
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ env.BINARY_NAME }}_${{ matrix.name }}
           path: ${{ env.BINARY_NAME }}_${{ matrix.name }}.tar.gz
@@ -111,13 +152,13 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Install toolchain
         run: rustup target add aarch64-apple-darwin
 
       - name: Cache Cargo dependencies
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
@@ -132,7 +173,7 @@ jobs:
         run: cargo build --release --target aarch64-apple-darwin --bin ${{ env.BINARY_NAME }} --lib
 
       - name: Upload Library for Java
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: lib-macos-aarch64
           path: target/aarch64-apple-darwin/release/lib${{ env.LIB_NAME }}.dylib
@@ -144,7 +185,7 @@ jobs:
           cd artifacts && tar -czf ../${{ env.BINARY_NAME }}_macos-aarch64.tar.gz *
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ env.BINARY_NAME }}_macos-aarch64
           path: ${{ env.BINARY_NAME }}_macos-aarch64.tar.gz
@@ -154,13 +195,13 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Install toolchain
         run: rustup target add x86_64-pc-windows-msvc
 
       - name: Cache Cargo dependencies
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
@@ -175,7 +216,7 @@ jobs:
         run: cargo build --release --target x86_64-pc-windows-msvc --bin ${{ env.BINARY_NAME }} --lib
 
       - name: Upload Library for Java
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: lib-windows-x86_64
           path: target/x86_64-pc-windows-msvc/release/${{ env.LIB_NAME }}.dll
@@ -187,15 +228,15 @@ jobs:
           Compress-Archive -Path artifacts/* -DestinationPath "${{ env.BINARY_NAME }}_windows-x86_64.zip" -Force
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ env.BINARY_NAME }}_windows-x86_64
           path: ${{ env.BINARY_NAME }}_windows-x86_64.zip
 
-  build-java:
+  build-publish-java:
     runs-on: ubuntu-latest
     needs:
-      - build-linux
+      - build-linux-gnu
       - build-macos
       - build-windows
 
@@ -205,56 +246,48 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Setup Java
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: 'temurin'
-          java-version: '21'
+          java-version: '25'
           cache: 'gradle'
 
       - name: Download Linux x86_64 Lib
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: lib-linux-x86_64-gnu
           path: java_wrapper/wrapper/src/main/resources/linux/x86_64
 
       - name: Download Linux Aarch64 Lib
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: lib-linux-aarch64-gnu
           path: java_wrapper/wrapper/src/main/resources/linux/aarch64
 
       - name: Download MacOS Aarch64 Lib
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: lib-macos-aarch64
           path: java_wrapper/wrapper/src/main/resources/macos/aarch64
 
       - name: Download Windows x86_64 Lib
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: lib-windows-x86_64
           path: java_wrapper/wrapper/src/main/resources/windows/x86_64
-
-      - name: Verify Library Placement
-        run: ls -R wrapper/src/main/resources
 
       - name: Build with Gradle
         run: |
           chmod +x gradlew
           ./gradlew build
 
-      - name: Rename and Prepare Artifact
-        run: |
-          mv wrapper/build/libs/wrapper.jar ../${{ env.BINARY_NAME }}_java_wrapper.jar
-
-      - name: Upload Java Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ env.BINARY_NAME }}_java_wrapper
-          path: ${{ env.BINARY_NAME }}_java_wrapper.jar
+      - name: Publish Java Wrapper to Modrinth
+        env:
+          MODRINTH_TOKEN: ${{ secrets.MODRINTH_TOKEN }}
+        run: ./gradlew :wrapper:modrinth -x :wrapper:jar
 
   build-docker:
     strategy:
@@ -271,7 +304,7 @@ jobs:
     runs-on: ${{ matrix.runner }}
 
     needs:
-      - build-linux
+      - build-linux-musl
 
     permissions:
       contents: read
@@ -284,10 +317,10 @@ jobs:
           echo "PLATFORM_PAIR=${platform//\//-}" >> $GITHUB_ENV
 
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Download Build Artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: ${{ env.BINARY_NAME }}_${{ matrix.artifact_suffix }}
           path: ./docker
@@ -299,10 +332,10 @@ jobs:
           chmod +x ${{ env.BINARY_NAME }}
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
 
       - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -310,7 +343,7 @@ jobs:
 
       - name: Extract metadata
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6
         with:
           images: ghcr.io/${{ github.repository }}
 
@@ -320,7 +353,7 @@ jobs:
 
       - name: Build and push by digest
         id: build
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v7
         with:
           context: docker
           file: docker/Dockerfile.ci
@@ -338,7 +371,7 @@ jobs:
           touch "${{ runner.temp }}/digests/${digest#sha256:}"
 
       - name: Upload digest
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: digests-${{ env.PLATFORM_PAIR }}
           path: ${{ runner.temp }}/digests/*
@@ -355,17 +388,17 @@ jobs:
 
     steps:
       - name: Download digests
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: ${{ runner.temp }}/digests
           pattern: digests-*
           merge-multiple: true
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
 
       - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -373,7 +406,7 @@ jobs:
 
       - name: Extract metadata
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6
         with:
           images: ghcr.io/${{ github.repository }}
           tags: |
@@ -402,14 +435,14 @@ jobs:
     runs-on: ubuntu-latest
 
     needs:
-      - build-linux
+      - build-linux-musl
+      - build-linux-gnu
       - build-macos
       - build-windows
-      - build-java
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -426,18 +459,35 @@ jobs:
           echo "release_name=Release ${TAG_NAME}" >> $GITHUB_OUTPUT
 
       - name: Download all artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: ./artifacts
           pattern: ${{ env.BINARY_NAME }}_*
           merge-multiple: true
 
       - name: Create release and upload assets
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           tag_name: ${{ steps.release_info.outputs.tag_name }}
           name: ${{ steps.release_info.outputs.release_name }}
           draft: false
+          prerelease: ${{ contains(steps.release_info.outputs.tag_name, '-beta') || contains(steps.release_info.outputs.tag_name, '-alpha') }}
+          body: |
+            Check the changelog at https://github.com/Quozul/PicoLimbo/blob/master/CHANGELOG.md
+
+            The Java Wrapper can be downloaded on Modrinth: https://modrinth.com/plugin/picolimbo-java-wrapper
+
+            Pterodactyl eggs can be found at https://github.com/Quozul/PicoLimbo/tree/master/pterodactyl/eggs
           files: ./artifacts/*
+
+      - name: Notify Discord
+        env:
+          WEBHOOK_URL: ${{ vars.DISCORD_WEBHOOK_URL }}
+          TAG_NAME: ${{ steps.release_info.outputs.tag_name }}
+        run: |
+          RELEASE_URL="https://github.com/${GITHUB_REPOSITORY}/releases/tag/${TAG_NAME}"
+          MESSAGE=$(printf '# PicoLimbo [Release %s](%s)\n\n:link: **Download & More Info**: [GitHub](https://github.com/%s) | [Documentation](https://picolimbo.quozul.dev) | [Changelog](https://github.com/%s/blob/master/CHANGELOG.md) | [Modrinth](https://modrinth.com/plugin/picolimbo-java-wrapper)\n\n<@&1373588060352020682>' "$TAG_NAME" "$RELEASE_URL" "$GITHUB_REPOSITORY" "$GITHUB_REPOSITORY")
+          PAYLOAD=$(jq -n --arg content "$MESSAGE" '{content: $content}')
+          curl -fsS -H "Content-Type: application/json" -d "$PAYLOAD" "$WEBHOOK_URL"

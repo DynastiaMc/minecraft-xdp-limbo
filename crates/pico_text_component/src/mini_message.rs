@@ -5,6 +5,7 @@ use thiserror::Error;
 
 #[derive(Default, Clone)]
 struct Style {
+    tag: String,
     color: Option<String>,
     bold: bool,
     italic: bool,
@@ -15,10 +16,16 @@ struct Style {
 
 #[derive(Debug, Error)]
 pub enum MiniMessageError {
-    #[error(transparent)]
-    QuickXml(#[from] quick_xml::Error),
-    #[error(transparent)]
-    Encoding(#[from] quick_xml::encoding::EncodingError),
+    #[error("Failed to parse MiniMessage: {source}. Input: {input}")]
+    QuickXml {
+        source: quick_xml::Error,
+        input: String,
+    },
+    #[error("Encoding error while parsing MiniMessage: {source}. Input: {input}")]
+    Encoding {
+        source: quick_xml::encoding::EncodingError,
+        input: String,
+    },
 }
 
 fn is_styling_tag(tag: &str) -> bool {
@@ -63,9 +70,14 @@ pub fn parse_mini_message(input: &str) -> Result<Component, MiniMessageError> {
     let mut style_stack: Vec<Style> = vec![Style::default()];
 
     loop {
-        match reader.read_event()? {
+        match reader
+            .read_event()
+            .map_err(|e| MiniMessageError::QuickXml {
+                source: e,
+                input: input.to_string(),
+            })? {
             Event::Start(e) => {
-                let tag_name = String::from_utf8(e.name().as_ref().to_vec()).unwrap_or_default();
+                let tag_name = e.name().as_ref().to_string();
 
                 if tag_name == "newline" {
                     if let Some(current_style) = style_stack.last() {
@@ -82,6 +94,7 @@ pub fn parse_mini_message(input: &str) -> Result<Component, MiniMessageError> {
                     }
                 } else if is_styling_tag(&tag_name) {
                     let mut new_style = style_stack.last().cloned().unwrap_or_default();
+                    new_style.tag = tag_name.clone();
                     match tag_name.as_str() {
                         "black" | "dark_blue" | "dark_green" | "dark_aqua" | "dark_red"
                         | "dark_purple" | "gold" | "gray" | "dark_gray" | "blue" | "green"
@@ -99,13 +112,15 @@ pub fn parse_mini_message(input: &str) -> Result<Component, MiniMessageError> {
                 }
             }
             Event::End(e) => {
-                let tag_name = String::from_utf8(e.name().as_ref().to_vec()).unwrap_or_default();
-                if is_styling_tag(&tag_name) && style_stack.len() > 1 {
-                    style_stack.pop();
+                let tag_name = e.name().as_ref().to_string();
+                if is_styling_tag(&tag_name)
+                    && let Some(pos) = style_stack.iter().rposition(|s| s.tag == tag_name)
+                {
+                    style_stack.truncate(pos);
                 }
             }
             Event::Text(e) => {
-                let text = e.decode()?.to_string();
+                let text = e.as_ref().to_string();
                 if text.is_empty() {
                     continue;
                 }
@@ -124,7 +139,7 @@ pub fn parse_mini_message(input: &str) -> Result<Component, MiniMessageError> {
                 }
             }
             Event::Empty(e) => {
-                let tag_name = String::from_utf8(e.name().as_ref().to_vec()).unwrap_or_default();
+                let tag_name = e.name().as_ref().to_string();
                 if tag_name == "newline"
                     && let Some(current_style) = style_stack.last()
                 {

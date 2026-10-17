@@ -11,7 +11,7 @@ You can find the egg files in the GitHub repository:
 The eggs support additional installation configuration through the following environment variable:
 
 - **VERSION**  
-  Specifies the Git tag of the release to install (e.g., `v1.12.0+mc26.1`).
+  Specifies the Git tag of the release to install (e.g., `v1.14.0+mc26.3`).
     - Default: `latest`
     - When set to `latest` (or left unset), the installer selects the newest stable release.
 
@@ -62,6 +62,70 @@ To use this configuration:
 3. Create a `server.toml` file with your configuration
 4. Run `docker compose up -d` to start the server
 
+## Using NixOS
+
+The flake provides a package, nixpkgs overlay, and NixOS module. The module runs PicoLimbo as a systemd service and exposes all server settings through `services.picolimbo.settings`, which is serialised to `/etc/picolimbo/server.toml` at activation time.
+
+To use it:
+
+1. Add PicoLimbo as a flake input
+
+```nix
+{
+  inputs = {
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    picolimbo.url = "github:Quozul/PicoLimbo";
+  };
+}
+```
+
+2. Import the NixOS module
+
+```nix
+imports = [
+  inputs.picolimbo.nixosModules.default
+];
+```
+
+3. Enable the service
+
+```nix
+{
+  services.picolimbo = {
+    enable = true;
+
+    settings = {
+      bind = "0.0.0.0:25565";
+
+      welcome_message = "<red>You were spawned in Limbo.</red>";
+      server_list = {
+        max_players = 50;
+      };
+    };
+  };
+}
+```
+
+It is recommended to store secrets (e.g. for forwarding) using `sops-nix` or with systemd credentials.
+
+```nix
+{
+  services.picolimbo.settings = {
+    bind = "0.0.0.0:25565";
+
+    forwarding = {
+      method = "MODERN";
+      secret = "\${VELOCITY_SECRET}";
+    };
+  };
+
+  systemd.services.picolimbo = {
+    serviceConfig.LoadCredential = "velocity-secret:/path/to/velocity-secret";
+    environment.VELOCITY_SECRET = "%d/velocity-secret";
+  };
+}
+```
+
 ## Binary / Standalone
 
 ### GitHub Releases
@@ -94,6 +158,8 @@ Select the binary that matches your system:
 | **`pico_limbo_macos-aarch64.tar.gz`**      | macOS         | Apple Silicon    |
 | **`pico_limbo_windows-x86_64.zip`**        | Windows       | Intel/AMD 64-bit |
 
+GNU/Linux builds require glibc 2.28 or newer. They support maintained distributions such as Debian 13, Ubuntu 22.04 LTS, and AlmaLinux OS 9; older distributions may not be supported.
+
 #### Manual Installation
 
 1. **Download** the appropriate binary for your system from the releases page
@@ -118,14 +184,14 @@ A Java wrapper for PicoLimbo is available on [Modrinth](https://modrinth.com/plu
 
 Since the Java wrapper uses native code, it cannot run on all platforms. It is only compatible with:
 
-- **GNU/Linux** (e.g., Debian, Ubuntu) - x64 CPUs (AMD/Intel) or arm64 CPUs (e.g., Raspberry Pi)
+- **GNU/Linux** with glibc 2.28 or newer (e.g., Debian 13, Ubuntu 22.04 LTS, AlmaLinux OS 9) - x64 CPUs (AMD/Intel) or arm64 CPUs (e.g., Raspberry Pi)
 - **Windows** - x64 CPUs (AMD/Intel)
 - **macOS** - M-series chips (M1/M2/M3+)
 
 If you are unsure whether it'll work on your system, try it. Most hosting providers use GNU/Linux with x64 CPUs, so you should be fine.
 
 > [!NOTE]
-> Since the wrapper uses glibc builds of PicoLimbo, Alpine Linux is **not supported** by the wrapper.
+> Since the wrapper uses glibc builds of PicoLimbo, Alpine Linux and older, unmaintained distributions may not be supported.
 
 ### Installation on Proxies
 

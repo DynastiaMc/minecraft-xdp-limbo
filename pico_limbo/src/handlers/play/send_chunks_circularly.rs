@@ -6,6 +6,7 @@ use minecraft_protocol::prelude::{Coordinates, ProtocolVersion};
 use pico_registries::registry_provider::DimensionInfo;
 use pico_structures::prelude::World;
 use std::sync::Arc;
+use tracing::warn;
 
 #[derive(Copy, Clone)]
 enum Direction {
@@ -35,7 +36,7 @@ impl Direction {
     }
 }
 
-struct SpiralIterator {
+pub struct SpiralIterator {
     center_x: i32,
     center_y: i32,
     current_x: i32,
@@ -48,7 +49,7 @@ struct SpiralIterator {
 }
 
 impl SpiralIterator {
-    const fn new(center_x: i32, center_y: i32, max_radius: i32) -> Self {
+    pub const fn new(center_x: i32, center_y: i32, max_radius: i32) -> Self {
         Self {
             center_x,
             center_y,
@@ -101,6 +102,7 @@ pub struct CircularChunkPacketIterator {
     biome_index: i32,
     pub dimension_height: i32,
     pub dimension_min_y: i32,
+    has_sky_light: bool,
     schematic_context: Option<WorldContext>,
     spiral_iterator: SpiralIterator,
     protocol_version: ProtocolVersion,
@@ -118,8 +120,12 @@ impl CircularChunkPacketIterator {
         let (center_x, center_z) = center_chunk;
         let paste_origin = Coordinates::new_uniform(0);
 
-        let schematic_context: Option<WorldContext> = get_block_report_id_mapping(protocol_version)
-            .map_or(None, |report_id_mapping| {
+        let report_id_mapping = get_block_report_id_mapping(protocol_version)
+            .inspect_err(|_| warn!("No block mapping for version {protocol_version}"))
+            .ok();
+
+        let schematic_context: Option<WorldContext> =
+            report_id_mapping.and_then(|report_id_mapping| {
                 world.map(|world_arc| WorldContext {
                     paste_origin,
                     world: world_arc,
@@ -131,6 +137,7 @@ impl CircularChunkPacketIterator {
             biome_index,
             dimension_height: dimension_info.height,
             dimension_min_y: dimension_info.min_y,
+            has_sky_light: dimension_info.legacy_protocol_id == 0,
             schematic_context,
             spiral_iterator: SpiralIterator::new(center_x, center_z, view_distance),
             protocol_version,
@@ -150,6 +157,8 @@ impl Iterator for CircularChunkPacketIterator {
             biome_index: self.biome_index,
             dimension_height: self.dimension_height,
             dimension_min_y: self.dimension_min_y,
+            has_sky_light: self.has_sky_light,
+            protocol_version: self.protocol_version,
         };
 
         let packet = match &self.schematic_context {
